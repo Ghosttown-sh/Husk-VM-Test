@@ -20,41 +20,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Check native Apple build host
-        run: |
-          test "$(uname -m)" = arm64
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
-          python3 --version
-      - name: Regression tests
-        run: |
-          mkdir -p build/evidence
-          set -o pipefail
-          python3 tests/translation-layer/run_vm_pressure.py --cc clang 2>&1 | tee build/evidence/vm-policy.log
-          sh tests/translation-layer/run_vm_pressure_macos.sh 2>&1 | tee build/evidence/vm-darwin.log
-          sh tests/translation-layer/run_compressed_heap.sh 2>&1 | tee build/evidence/compressed-heap.log
-          sh tests/translation-layer/run_guest_ram_plan.sh 2>&1 | tee build/evidence/qemu-ram.log
-          clang -std=c11 -Wall -Wextra -Isrc/translation-layer tests/translation-layer/plan_test.c src/translation-layer/husk-tl-elf.c -o build/plan-test
-          build/plan-test | tee build/evidence/page-plan.log
       - name: Install public build tools
         run: |
           brew install xcodegen qemu
-          rustup target add aarch64-apple-ios
-      - name: Stage verified official runtime dependencies
-        run: |
-          curl --fail --location --retry 3 https://github.com/Leviidev/Husk/releases/download/3.3/Husk.ipa -o build/official-3.3.ipa
-          python3 tools/stage_vm_test_dependencies.py build/official-3.3.ipa
-      - name: Build pairing library and patched app
-        run: |
-          bash scripts/build_rppairing_ios.sh
-          bash scripts/package_ipa.sh "$GITHUB_WORKSPACE/build/Husk-VM-Test.ipa"
-      - name: Validate the produced IPA
-        run: |
-          COMMIT=$(git rev-parse --short HEAD)
-          git diff --quiet || COMMIT="$COMMIT-dirty"
-          python3 tools/validate_vm_test_ipa.py build/Husk-VM-Test.ipa --commit "$COMMIT" | tee build/evidence/ipa-validation.log
-          ditto -x -k build/Husk-VM-Test.ipa build/verify-ipa
-          codesign --verify --deep --strict --verbose=2 build/verify-ipa/Payload/Husk.app
+      - name: Test, build and validate using the provider-independent entry point
+        run: bash scripts/build_vm_test.sh "$GITHUB_WORKSPACE/build/Husk-VM-Test.ipa"
       - uses: actions/upload-artifact@v4
         if: success()
         with:

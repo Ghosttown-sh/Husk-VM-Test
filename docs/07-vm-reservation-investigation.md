@@ -1,6 +1,8 @@
 # Visual Maimai Mobile: VM investigation and test build
 
 Status on 2026-11-02: source fixes implemented and local Windows tests passed.
+The QEMU RAM-plan Swift source has also been compiled and executed successfully
+by Swift 6.2.4 on a public Linux compiler service without a login.
 No modified IPA has been compiled yet. The macOS integration tests, complete
 Unity startup, and physical iPad editor/touch/save checks remain unverified.
 
@@ -161,9 +163,16 @@ No Android snapshot download is required for this work.
 | Official dependency Mach-O targets, wrong-platform rejection, reject official IPA as test build | Passed |
 | Real Mach reservation/trim/protect/unmap integration | Written; requires macOS, not run |
 | Existing compressed-heap Darwin regression | Requires macOS, not run |
-| Swift `GuestRAMPlan` execution tests | Written; no Swift compiler here, not run |
+| Swift `GuestRAMPlan` execution tests | Passed using actual Swift 6.2.4, Swift 5 language mode, Linux x86-64 via Compiler Explorer; Apple build remains untested |
 | Patched app compilation / IPA signatures | Not run; no macOS executor connected |
 | Full Unity startup, editor UI, touch, edit/save/reopen on iPad | Not run |
+
+The remote Swift test sent only `GuestRAMPlan.swift` and its test source to
+Compiler Explorer's documented compile/execute API. Its compiler exit code and
+execution exit code were both zero, `didExecute` was true, and all assertions
+passed. No APK, device logs, pairing record or credential was sent. This tests
+the platform-independent memory planning logic, not `QemuRunner`'s Apple APIs
+or the QEMU machine. The raw response and source hash accompany the evidence.
 
 The static ELF checks do not claim native libraries were actually loaded on
 Windows. ANGLE/Metal and full Unity execution require an Apple host/device.
@@ -183,7 +192,23 @@ Official IPA SHA256:
 Its plist was checked for build 148 and commit `9345aab`. The official IPA
 is an input dependency only; it is **not** a fixed output IPA.
 
-`.github/workflows/vm-test-ipa.yml` configures a manual GitHub Actions build
+`scripts/build_vm_test.sh` is the complete, provider-independent entry point.
+It runs the native regressions, stages verified dependencies, compiles, then
+validates the IPA and its signatures before writing the final output. It can
+run on any Apple Silicon Mac with selected Xcode 26+, Python 3.11+, XcodeGen,
+qemu-img and Rust/rustup. It needs no GitHub login or Apple signing account:
+
+```sh
+bash scripts/build_vm_test.sh
+```
+
+The public upstream source and official dependency IPA can be downloaded
+without logging in. Set `HUSK_OFFICIAL_IPA` to an existing verified local copy
+to reuse it. The host/Xcode checks fail before building on unsupported hosts.
+Shell syntax and the Windows rejection path were checked; the Mac build
+itself remains unexecuted.
+
+`.github/workflows/vm-test-ipa.yml` calls that same script in a manual Actions build
 on standard Apple Silicon `macos-15`, explicitly selecting Xcode 26.3 because
 the runner's default Xcode 16.4 is too old for Husk's iOS 26 APIs. The
 [runner inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md)
@@ -195,7 +220,10 @@ permissions, and uploads an IPA only after tests, compilation, resource/ZIP/
 Mach-O validation, and signature verification pass. Standard hosted runners
 are [free for public repositories](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 No paid runner or Apple signing secret is configured. It has **not been
-dispatched**: no GitHub account is connected/authorized for this task.
+dispatched**. The user has authorized proceeding, but there is no authenticated
+GitHub session or connected Mac executor in this environment. Authorization
+is no longer the blocker; a usable build host/session is. GitHub is one way
+to obtain the Mac runner, not a dependency of the bug fix or build script.
 
 The result, if the build succeeds, is `Husk-VM-Test.ipa`, with app identifier
 `com.husk.vmtest`, display name **Husk VM Test**, extension IDs beneath that
@@ -216,10 +244,12 @@ the already-working pairing/VPN setup.
 
 ## Remaining actions, in order
 
-1. Authorize a free public GitHub fork/build containing only these Husk
-   source changes, and connect GitHub (or push the branch and dispatch the
-   prepared workflow yourself). The account is needed to run the macOS job;
-   no APK, Apple account secret, or pairing file should be uploaded.
+1. Provide access to an Apple Silicon Mac or complete the prepared official
+   GitHub CLI browser sign-in so the free public Actions runner can be used.
+   The user has already authorized the work; no further routine permission is
+   needed. There is no requirement to install a Codex GitHub plugin. Only
+   Husk source changes belong on the fork: no APK, Apple account secret or
+   pairing file should be uploaded.
 2. Run the prepared Darwin/Swift tests and compile. If any fail, fix and
    rerun before offering an IPA. This is still outstanding engineering work,
    not a claim that the workflow is already proven.
