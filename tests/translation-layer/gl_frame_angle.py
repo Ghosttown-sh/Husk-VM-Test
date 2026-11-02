@@ -137,6 +137,7 @@ def main():
         assert error()==0
         assert current(display,ui,ui,consumer)
         if index == 0: print('First consumer acquire',flush=True)
+        bind(0xdead,0) # an unrelated prior UI error must not poison the import
         assert bridge.tl_gl_frame_acquire(frame,C.byref(tex)),('acquire',hex(error()))
         consume(tex)
         read(0,0,1,1,0x1908,0x1401,pixel)

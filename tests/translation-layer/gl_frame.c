@@ -57,12 +57,14 @@ int main(void) {
         assert(tex==7 && fb==9 && unpack==11 && images==1 && fences==1);
         assert(tl_gl_frame_take_guest_error(f)==0x500 && !tl_gl_frame_take_guest_error(f));
         ctx=(void *)1;expected_wait=f->written;
+        errors=0x502; /* private UI draw error predates the valid import */
         assert(tl_gl_frame_acquire(f,&t) && t);
         tl_gl_frame_release(f);
         assert(fences==1);
     }
     assert(copies==240 && waits==479 && !finishes);
     puts("PASS: 240 cross-context frames, producer/consumer fences, bounded image/sync ownership, guest GL state/errors retained; no CPU pixels API");
+    puts("PASS: stale consumer GL errors do not disable GPU image import or change guest errors");
     ctx=(void *)2;expected_wait=f->read;
     assert(tl_gl_frame_publish(f,(void *)3,1668,2420) && images==1);
     ctx=(void *)1;expected_wait=f->written;assert(tl_gl_frame_acquire(f,&t));tl_gl_frame_release(f);
@@ -87,6 +89,8 @@ int main(void) {
     ctx=(void *)1;wait_fail=true;assert(!tl_gl_frame_acquire(f,&t));wait_fail=false;tl_gl_frame_destroy(f);
     f=fresh();ctx=(void *)2;assert(tl_gl_frame_publish(f,(void *)3,64,64));
     ctx=(void *)1;import_fail=true;assert(!tl_gl_frame_acquire(f,&t));import_fail=false;tl_gl_frame_destroy(f);
+    f=fresh();ctx=(void *)2;assert(tl_gl_frame_publish(f,(void *)3,64,64));
+    ctx=(void *)1;errors=0x507;assert(!tl_gl_frame_acquire(f,&t));tl_gl_frame_destroy(f);
     f=fresh();ctx=(void *)2;fence_fail=true;assert(tl_gl_frame_publish(f,(void *)3,64,64));
     ctx=(void *)1;assert(tl_gl_frame_acquire(f,&t));tl_gl_frame_release(f);fence_fail=false;tl_gl_frame_destroy(f);
     assert(finishes==2 && !images && !fences);

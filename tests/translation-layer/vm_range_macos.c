@@ -33,6 +33,13 @@ static int range_sysctl(const char *name,void *old,size_t *len,void *newp,size_t
  * data access, trimming, freeing and reusing use the real Darwin kernel. */
 static uintptr_t occupied;
 static bool fail_data;
+static unsigned ordinary_aligned_maps;
+static kern_return_t count_aligned_map(vm_map_t t, vm_address_t *a, vm_size_t n, vm_address_t mask,
+        int flags, mem_entry_name_port_t o, vm_offset_t off, boolean_t copy,
+        vm_prot_t p, vm_prot_t max, vm_inherit_t inherit) {
+    if (flags & VM_FLAGS_ANYWHERE) ordinary_aligned_maps++;
+    return vm_map(t,a,n,mask,flags,o,off,copy,p,max,inherit);
+}
 static kern_return_t bounded_task_info(task_name_t t, task_flavor_t flavor, task_info_t info,
                                        mach_msg_type_number_t *count) {
     kern_return_t kr = task_info(t, flavor, info, count);
@@ -73,7 +80,9 @@ static kern_return_t model_create(vm_map_t task,uint32_t flavor,uint8_t *bytes,u
 }
 #define task_info bounded_task_info
 #define mmap full_heap_mmap
+#define vm_map count_aligned_map
 #include "../../src/translation-layer-next/husk-tl-vm.c"
+#undef vm_map
 #include "production_vm.inc"
 #undef task_info
 #undef mmap
@@ -180,6 +189,30 @@ int main(void) {
     puts("PASS: kernel denial and racing ownership preserved, no overwritten mappings or fake success, all guest mappings released");
     range_create=real_create;
     assert(munmap((void *)raced,0x1fffc000)==0);
+    assert(tl_vm_reserve_delegated_aligned(0x10000000,3)==MAP_FAILED && errno==EINVAL);
+    ordinary_aligned_maps=0;
+    for (int i=0;i<24;i++) {
+        live[i]=tl_bionic_reserve_aligned(0x10000000,0x10000000);
+        assert(live[i]!=MAP_FAILED && !((uintptr_t)live[i]&0xfffffff));
+        assert(anon_contains((uintptr_t)live[i],0x10000000));
+        assert(b_mprotect(live[i],getpagesize(),PROT_READ|PROT_WRITE)==0);
+        assert(*(volatile char *)live[i]==0); *(volatile char *)live[i]=42;
+    }
+    assert(ordinary_aligned_maps==0);
+    for (int i=0;i<24;i++) assert(b_munmap(live[i],0x10000000)==0);
+    assert(g_nanon==0);
+    puts("PASS: 24 aligned guest heaps use delegated space before ordinary host placement; 6 GiB reserved without consuming the host allocation range");
+    int previous=registrations();
+    void *large=tl_vm_reserve_aligned(1ULL<<30,1ULL<<30);
+    assert(large!=MAP_FAILED && !((uintptr_t)large&((1ULL<<30)-1)));
+    assert(registrations()==previous+1 && ordinary_aligned_maps==0);
+    assert(mprotect(large,getpagesize(),PROT_READ|PROT_WRITE)==0);
+    assert(*(volatile char *)large==0); *(volatile char *)large=73;
+    assert(munmap(large,1ULL<<30)==0);
+    assert(tl_vm_reserve_aligned(1ULL<<30,1ULL<<30)==large);
+    assert(registrations()==previous+1 && ordinary_aligned_maps==0);
+    assert(munmap(large,1ULL<<30)==0);
+    puts("PASS: fresh delegated registration honors 1 GiB alignment and exact size; freed aligned range reused");
     assert(munmap(guard,getpagesize())==0);
     if(model_start) assert(munmap((void *)model_start,model_end-model_start)==0);
 }

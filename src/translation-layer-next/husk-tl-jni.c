@@ -35,9 +35,19 @@ static uint32_t hash_str(const char *s) { uint32_t h = 2166136261u; while (*s) {
 
 /* --------------------------------------------------------------- objects */
 
+static jobj *g_oom;
+void tl_jni_allocation_failed(size_t bytes)
+{
+    tl_log_line("jni: host allocation failed bytes=%zu; using preallocated OutOfMemoryError", bytes);
+    /* No class lookup, string construction or recursive allocation here. */
+    if (!g_oom) { tl_log_line("jni: allocation failed before exception reserve was initialized"); abort(); }
+    tl_jni_set_pending(g_oom);
+}
+
 static jobj *obj_alloc(uint8_t kind, tl_jclass *cls)
 {
     jobj *o = calloc(1, sizeof(*o));
+    if (!o) { tl_jni_allocation_failed(sizeof(*o)); return NULL; }
     o->refs = 1;
     o->kind = kind;
     o->cls = cls;
@@ -48,7 +58,7 @@ jobj *tl_jni_ref(jobj *o) { if (o) __atomic_add_fetch(&o->refs, 1, __ATOMIC_RELA
 
 void tl_jni_unref(jobj *o)
 {
-    if (!o || o->kind == TL_K_CLASS) return;
+    if (!o || o == g_oom || o->kind == TL_K_CLASS) return;
     /* With the Java runtime up, objects live as long as Java can reach them, which reference counts from native code do not
      * know about: nothing is freed here (a tracing collector's job). */
     if (tl_dvm) return;
@@ -151,9 +161,14 @@ jobj *tl_jni_class_object(const char *name) { return tl_jni_class(name)->mirror;
 jobj *tl_jni_new_object(tl_jclass *cls)
 {
     jobj *o = obj_alloc(TL_K_OBJECT, cls);
+    if (!o) return NULL;
     if (tl_dvm && cls && cls->dvm) {
         uint32_t n = tl_dvm->instance_slots(cls);
-        if (n) { o->fields = calloc(n, sizeof(jvalue)); o->nfields = n; }
+        if (n) {
+            o->fields = calloc(n, sizeof(jvalue));
+            if (!o->fields) { free(o); tl_jni_allocation_failed((size_t)n * sizeof(jvalue)); return NULL; }
+            o->nfields = n;
+        }
     }
     return o;
 }
@@ -161,7 +176,9 @@ jobj *tl_jni_new_object(tl_jclass *cls)
 jobj *tl_jni_new_string(const char *utf8)
 {
     jobj *o = obj_alloc(TL_K_STRING, tl_jni_class("java/lang/String"));
+    if (!o) return NULL;
     o->str.utf8 = strdup(utf8 ? utf8 : "");
+    if (!o->str.utf8) { free(o); tl_jni_allocation_failed(strlen(utf8 ? utf8 : "") + 1); return NULL; }
     return o;
 }
 
@@ -177,8 +194,10 @@ jobj *tl_jni_new_prim_array(char etype, uint32_t len)
     if (etype == 'Z' || etype == 'B' || etype == 'C' || etype == 'S' || etype == 'I' || etype == 'J' || etype == 'F' || etype == 'D') { /* ok */ }
     char cn[4] = { '[', etype, 0 };
     jobj *o = obj_alloc(TL_K_PRIM_ARRAY, tl_jni_class(cn));
+    if (!o) return NULL;
     o->arr.esz = esz_of(etype); o->arr.etype = etype; o->arr.len = len;
     o->arr.data = calloc(len ? len : 1, o->arr.esz);
+    if (!o->arr.data) { size_t bytes = (size_t)(len ? len : 1) * o->arr.esz; free(o); tl_jni_allocation_failed(bytes); return NULL; }
     return o;
 }
 
@@ -187,8 +206,10 @@ jobj *tl_jni_new_obj_array(tl_jclass *elem, uint32_t len)
     char cn[1024];
     snprintf(cn, sizeof(cn), "[L%s;", elem ? elem->name : "java/lang/Object");
     jobj *o = obj_alloc(TL_K_OBJ_ARRAY, tl_jni_class(cn));
+    if (!o) return NULL;
     o->oarr.len = len;
     o->oarr.v = calloc(len ? len : 1, sizeof(jobj *));
+    if (!o->oarr.v) { free(o); tl_jni_allocation_failed((size_t)(len ? len : 1) * sizeof(jobj *)); return NULL; }
     return o;
 }
 
@@ -456,7 +477,9 @@ static __thread jobj *t_pending;
 void tl_jni_throw(const char *cls, const char *msg)
 {
     jobj *e = tl_jni_new_object(tl_jni_class(cls));
+    if (!e) return;
     jvalue v; v.l = tl_jni_new_string(msg ? msg : "");
+    if (!v.l) return;
     tl_jni_set_field(e, "detailMessage", "Ljava/lang/String;", v);
     t_pending = e;
     tl_log_line("jni: throwing %s: %s", cls, msg ? msg : "");
@@ -763,6 +786,7 @@ static jo new_object(jo cls, void *mid, int how, const jvalue *a, tl_va_list *ap
 {
     if (!cls || cls->kind != TL_K_CLASS) { tl_jni_throw("java/lang/NullPointerException", "class is null"); return NULL; }
     jobj *o = tl_jni_new_object(cls->klass.jc);
+    if (!o) return NULL;
     tl_jmeth *m = mid_ok(mid);
     if (m) {
         jvalue args[40];
@@ -1220,6 +1244,21 @@ void tl_jni_init(void)
 {
     pthread_once(&g_init_once, build_tables);
     g_env_fns[228] = (const void *)jni_ExceptionCheck;
+}
+
+bool tl_jni_prepare_oom(void)
+{
+    /* Called once after the boot classes are linked, before loading the app.
+     * Avoid the Throwable constructor, which captures/allocates a backtrace. */
+    if (g_oom) return true;
+    jobj *e = tl_jni_new_object(tl_jni_class("java/lang/OutOfMemoryError"));
+    if (!e) return false;
+    jobj *message = tl_jni_new_string("Host address space allocation failed");
+    if (!message) return false;
+    jvalue value = { .l = message };
+    tl_jni_set_field(e, "detailMessage", "Ljava/lang/String;", value);
+    g_oom = e;
+    return true;
 }
 
 /* ------------------------------------------------------------- for the interpreter */

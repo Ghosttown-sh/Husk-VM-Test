@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdio.h>
 
 /* EGLImage shares storage without merging the guest and compositor's texture
  * namespaces. Producer and consumer fence each other before reuse. In contrast
@@ -17,6 +18,9 @@ struct tl_gl_frame {
     void *(*metal_image)(void *, int, int, void *(*)(const char *));
     void *error_context;
     unsigned guest_errors;
+    unsigned stale_reports;
+    const char *failure_stage;
+    unsigned failure_error;
     const char *(*query)(void *, int);
     const unsigned char *(*string)(unsigned);
     void *(*context)(void);
@@ -40,6 +44,13 @@ struct tl_gl_frame {
     void (*finish)(void);
     unsigned (*error)(void);
 };
+static bool failure(tl_gl_frame *f, const char *stage, unsigned error)
+{
+    f->failed = true; f->failure_stage = stage; f->failure_error = error;
+    fprintf(stderr,"egl: GPU frame failed stage=%s error=%#x size=%dx%d\n",
+            stage,error,f->width,f->height);
+    return false;
+}
 static bool extension(const char *list, const char *word)
 {
     size_t n = strlen(word);
@@ -83,8 +94,10 @@ fail:
 static bool wait_for(tl_gl_frame *f, void **sync)
 {
     if (!*sync) return true;
-    if (!f->wait_sync(f->dpy,*sync,0) && f->client_wait(f->dpy,*sync,0,1000000000ULL) != 0x30f6) {
-        f->failed = true; return false;
+    if (!f->wait_sync(f->dpy,*sync,0)) {
+        int result = f->client_wait(f->dpy,*sync,0,1000000000ULL);
+        if (result != 0x30f6) return failure(f,
+            sync == &f->written ? "producer-fence-wait" : "consumer-fence-wait", (unsigned)result);
     }
     f->destroy_sync(f->dpy,*sync); *sync = NULL;
     return true;
@@ -129,7 +142,7 @@ bool tl_gl_frame_publish(tl_gl_frame *f, void *surface, int w, int h)
         unsigned e = f->error();
         if (!e) break;
         if (e >= 0x500 && e <= 0x507) f->guest_errors |= 1u << (e - 0x500);
-        if (e == 0x507) { f->failed = true; return false; }
+        if (e == 0x507) return failure(f,"producer-context-lost",e);
     }
     if (!wait_for(f,&f->read)) return false;
     if (f->width != w || f->height != h) tl_gl_frame_reset(f);
@@ -152,12 +165,13 @@ bool tl_gl_frame_publish(tl_gl_frame *f, void *surface, int w, int h)
             const int attributes[] = {0x30d2,1,0x3038}; /* EGL_IMAGE_PRESERVED_KHR */
             f->image = f->create_image(f->dpy,ctx,0x30b1,(void *)(uintptr_t)f->src,attributes);
         }
-        if (!f->image) { f->failed = true; goto done; }
+        if (!f->image) { failure(f,"image-create",0); goto done; }
         f->width = w; f->height = h;
     }
     f->framebuffer(0x8ca8,0); /* default read framebuffer, including MSAA resolve */
     f->copy(0x0de1,0,0,0,0,0,w,h);
-    if (f->error()) f->failed = true;
+    unsigned copy_error = f->error();
+    if (copy_error) failure(f,"producer-copy",copy_error);
     else { fence(f,&f->written); ok = true; }
 done:
     /* These errors belong to the bridge, never to the guest. Its earlier
@@ -178,6 +192,17 @@ unsigned tl_gl_frame_take_guest_error(tl_gl_frame *f)
 bool tl_gl_frame_acquire(tl_gl_frame *f, uint32_t *texture)
 {
     if (!f || f->failed || !f->image || f->context() != f->consumer) return false;
+    /* Clear errors from earlier UI drawing BEFORE any import operation. This
+     * private context never exposes GL errors to the guest. A stale enum or
+     * draw error is not an image-import failure and must not permanently send
+     * every subsequent frame through glReadPixels. Context loss is different. */
+    for (int i = 0; i < 16; i++) {
+        unsigned e = f->error();
+        if (!e) break;
+        if (e == 0x507) return failure(f,"consumer-context-lost",e);
+        if (f->stale_reports++ < 4)
+            fprintf(stderr,"egl: cleared prior compositor GL error %#x before GPU import\n",e);
+    }
     if (!wait_for(f,&f->written)) return false;
     if (!f->dst) f->gen(1,&f->dst);
     if (!f->imported) {
@@ -187,9 +212,9 @@ bool tl_gl_frame_acquire(tl_gl_frame *f, uint32_t *texture)
         f->param(0x0de1,0x2801,0x2601); f->param(0x0de1,0x2800,0x2601);
         f->param(0x0de1,0x2802,0x812f); f->param(0x0de1,0x2803,0x812f);
         /* This is Husk's private compositor context; its errors are ours. */
-        f->failed = f->error() != 0;
+        unsigned import_error = f->error();
         f->bind(0x0de1,(uint32_t)old);
-        if (f->failed) return false;
+        if (import_error) return failure(f,"consumer-image-import",import_error);
         f->imported = true;
     }
     *texture = f->dst; return true;

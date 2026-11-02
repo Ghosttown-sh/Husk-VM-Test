@@ -68,6 +68,9 @@ typedef struct tl_jhle {
 /* ----------------------------------------------------------------- setup */
 
 void tl_jni_init(void);
+/* Prepare a reusable exception before guest heaps can pressure host malloc. */
+bool tl_jni_prepare_oom(void);
+void tl_jni_allocation_failed(size_t bytes);
 void tl_jni_set_trace(int level);       /* 1: lookups; 2: every call */
 
 /* Declare a class with its superclass (JNI names). Safe to repeat. */

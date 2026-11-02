@@ -65,7 +65,7 @@ static kern_return_t region_at(uintptr_t *at, vm_size_t *span,
     return kr;
 }
 
-static void *reuse_range(const owned_range *r, size_t size) {
+static void *reuse_range(const owned_range *r, size_t size, size_t alignment) {
     uintptr_t cursor = r->start;
     while (cursor < r->end && size <= r->end - cursor) {
         uintptr_t next = cursor;
@@ -74,8 +74,10 @@ static void *reuse_range(const owned_range *r, size_t size) {
         kern_return_t kr = region_at(&next, &span, &info);
         if (kr != KERN_SUCCESS && kr != KERN_INVALID_ADDRESS) break;
         uintptr_t end = kr == KERN_SUCCESS && next < r->end ? next : r->end;
-        if (end > cursor && size <= end - cursor) {
-            vm_address_t at = cursor;
+        uintptr_t aligned = cursor <= UINTPTR_MAX - (alignment - 1)
+            ? (cursor + alignment - 1) & ~(uintptr_t)(alignment - 1) : UINTPTR_MAX;
+        if (end > aligned && size <= end - aligned) {
+            vm_address_t at = aligned;
             kr = vm_map(mach_task_self(), &at, size, 0, VM_FLAGS_FIXED,
                 MACH_PORT_NULL, 0, FALSE, VM_PROT_NONE, VM_PROT_ALL, VM_INHERIT_COPY);
             if (kr == KERN_SUCCESS) return (void *)at;
@@ -88,8 +90,13 @@ static void *reuse_range(const owned_range *r, size_t size) {
 }
 
 void *tl_vm_reserve_delegated(size_t size) {
+    return tl_vm_reserve_delegated_aligned(size, (size_t)getpagesize());
+}
+
+void *tl_vm_reserve_delegated_aligned(size_t size, size_t alignment) {
     size_t mask = (size_t)getpagesize() - 1;
     if (!size || size > SIZE_MAX - mask) { errno = ENOMEM; return MAP_FAILED; }
+    if (alignment < mask + 1 || (alignment & (alignment - 1))) { errno = EINVAL; return MAP_FAILED; }
     size = (size + mask) & ~mask;
     pthread_once(&range_once, find_range_create);
     if (!range_create) {
@@ -98,7 +105,7 @@ void *tl_vm_reserve_delegated(size_t size) {
     }
     pthread_mutex_lock(&range_lock);
     for (owned_range *r = ranges; r; r = r->next) {
-        void *p = reuse_range(r, size);
+        void *p = reuse_range(r, size, alignment);
         if (p != MAP_FAILED) {
             tl_log_line("mm: reused delegated VM range addr=%p len=%#zx", p, size);
             pthread_mutex_unlock(&range_lock);
@@ -132,16 +139,18 @@ void *tl_vm_reserve_delegated(size_t size) {
             if (end > limit) end = limit;
             if (at > cursor) cursor = at;
             if (end <= cursor) break;
+            uintptr_t aligned = cursor <= UINTPTR_MAX - (alignment - 1)
+                ? (cursor + alignment - 1) & ~(uintptr_t)(alignment - 1) : UINTPTR_MAX;
             if (!info.is_submap && info.protection == VM_PROT_NONE && info.max_protection == VM_PROT_NONE
-                && size <= end - cursor) {
-                range_recipe recipe = { UINT64_C(2) << 48, cursor, cursor + size };
+                && end > aligned && size <= end - aligned) {
+                range_recipe recipe = { UINT64_C(2) << 48, aligned, aligned + size };
                 last = range_create(mach_task_self(), 1, (uint8_t *)&recipe, sizeof(recipe));
                 if (last == KERN_SUCCESS) {
-                    node->start = cursor; node->end = cursor + size; node->next = ranges; ranges = node;
+                    node->start = aligned; node->end = aligned + size; node->next = ranges; ranges = node;
                     tl_log_line("mm: delegated VM range addr=%p len=%#zx (kernel-approved PROT_NONE reservation)",
-                        (void *)cursor, size);
+                        (void *)aligned, size);
                     pthread_mutex_unlock(&range_lock);
-                    return (void *)cursor;
+                    return (void *)aligned;
                 }
                 /* Permissions/unsupported ABI cannot be repaired by another
                  * address. A racing registration can be retried next call. */

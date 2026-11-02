@@ -112,6 +112,21 @@ void *tl_vm_reserve_aligned(size_t size, size_t alignment)
     if (!size || size % page || alignment < page || (alignment & (alignment - 1))) {
         errno = EINVAL; return MAP_FAILED;
     }
+#ifndef TL_VM_NO_DELEGATED_RANGES
+    /* Unity's mostly uncommitted heaps must not consume the ordinary address
+     * range needed by libmalloc (JNI, UIKit, ANGLE). Recovering guest mmap
+     * after that range is full cannot repair a host calloc. Prefer an exact,
+     * kernel-approved aligned reservation in the delegated void for large
+     * heaps, while ordinary allocation still has room for range metadata.
+     * Older kernels/refusals retain the existing Mach allocation path. */
+    if (size >= (64ULL << 20)) {
+        void *p = tl_vm_reserve_delegated_aligned(size, alignment);
+        if (p != MAP_FAILED) {
+            tl_log_line("mm: guest heap placed outside host allocation ranges len=%#zx alignment=%#zx", size, alignment);
+            return p;
+        }
+    }
+#endif
     vm_address_t at = 0;
     kern_return_t kr = vm_map(mach_task_self(), &at, size, alignment - 1,
         VM_FLAGS_ANYWHERE, MACH_PORT_NULL, 0, FALSE, VM_PROT_NONE, VM_PROT_ALL, VM_INHERIT_COPY);
