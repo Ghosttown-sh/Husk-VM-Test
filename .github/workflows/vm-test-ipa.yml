@@ -5,8 +5,9 @@ on:
       runner:
         description: Standard free Mac runner image
         type: choice
-        default: macos-26
+        default: xcode-27
         options:
+          - xcode-27
           - macos-26
           - macos-15
           - macos-15-intel
@@ -18,11 +19,11 @@ jobs:
   # Standard hosted runners are free for public repositories. Never start this
   # job on a private repository where account billing/quotas could apply.
   build:
-    if: github.event.repository.private == false && contains(fromJSON('["macos-26", "macos-15", "macos-15-intel"]'), inputs.runner)
+    if: github.event.repository.private == false && contains(fromJSON('["xcode-27", "macos-26", "macos-15", "macos-15-intel"]'), inputs.runner)
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 60
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: ${{ inputs.runner == 'xcode-27' && '/Applications/Xcode_27.1.app/Contents/Developer' || '/Applications/Xcode_26.3.app/Contents/Developer' }}
       HUSK_TEST_BUILD: '1'
       DD: ${{ github.workspace }}/build/derived-vm-test
     steps:
@@ -33,6 +34,7 @@ jobs:
         run: |
           brew install xcodegen qemu
       - name: Select signed Swift 6.4 compiler for the vendored StikJIT framework
+        if: inputs.runner != 'xcode-27'
         run: bash scripts/install_vm_test_swift.sh
       - name: Test, build and validate using the provider-independent entry point
         run: bash scripts/build_vm_test.sh "$GITHUB_WORKSPACE/build/Husk-VM-Test.ipa"
