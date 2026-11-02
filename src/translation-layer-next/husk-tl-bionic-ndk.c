@@ -5,6 +5,7 @@
  */
 #define _DARWIN_C_SOURCE
 #include "husk-tl-bionic.h"
+#include "husk-tl-audio.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -422,10 +423,12 @@ static void aa_play(aa_stream *s, const void *buf, int frames)
     if (tl_cocos_audio_hook) tl_cocos_audio_hook(pcm, frames, AA_CHANNELS, AA_RATE);
     else { struct timespec ts = { 0, (long)((double)frames * 1e9 / AA_RATE) }; nanosleep(&ts, NULL); }
 }
+static bool aa_alive(void *arg) { return atomic_load(&((aa_stream *)arg)->run); }
 static void *aa_pump(void *arg)
 {
     aa_stream *s = arg;
     pthread_setname_np("aaudio-pump");
+    tl_audio_set_thread_alive(aa_alive,s);
     int n = s->burst;
     /* sized for the app's format (Unity asks for float: a 16-bit buffer was half what it wrote) and the full buffer capacity, as Android's is */
     size_t frame_bytes = (size_t)s->channels * (s->format == AA_FORMAT_FLOAT ? 4 : 2), cap = (size_t)(n > AA_BURST * 8 ? n : AA_BURST * 8);
@@ -455,7 +458,8 @@ static int b_AAudioStream_requestStart(aa_stream *s)
 }
 static int aa_stop(aa_stream *s, int state)
 {
-    if (atomic_exchange(&s->run, false) && s->thread_started) { pthread_join(s->thread, NULL); s->thread_started = false; }
+    atomic_store(&s->run,false);
+    if (s->thread_started) { tl_audio_cancel_thread(s->thread); pthread_join(s->thread, NULL); s->thread_started = false; }
     atomic_store(&s->state, state);
     return AA_OK;
 }

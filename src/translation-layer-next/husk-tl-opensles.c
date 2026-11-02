@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include "husk-tl-bionic.h"
+#include "husk-tl-audio.h"
 
 extern void (*tl_cocos_audio_hook)(const int16_t *samples, int frames, int channels, int rate);
 
@@ -178,10 +179,12 @@ static sl_object *new_object(int kind)
 }
 
 /* ---- SLPlayItf and the player's thread */
+static bool player_alive(void *arg) { return atomic_load(&((sl_object *)arg)->thread_run); }
 static void *player_pump(void *arg)
 {
     sl_object *o = arg;
     pthread_setname_np("opensl-pump");
+    tl_audio_set_thread_alive(player_alive,o);
     while (atomic_load(&o->thread_run)) {
         if (atomic_load(&o->play_state) != SL_PLAYING) { usleep(2000); continue; }
         pthread_mutex_lock(&o->mu);
@@ -212,6 +215,7 @@ static void player_stop_thread(sl_object *o)
 {
     if (!o->thread_started) return;
     atomic_store(&o->thread_run, false);
+    tl_audio_cancel_thread(o->thread);
     pthread_join(o->thread, NULL);
     o->thread_started = false;
 }

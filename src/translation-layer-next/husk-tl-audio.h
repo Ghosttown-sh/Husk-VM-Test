@@ -12,6 +12,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,6 +23,13 @@ void tl_audio_install(void);
 
 /* Silence the output and stop the clock while the game is not on screen (writers block until resumed). */
 void tl_audio_set_paused(bool paused);
+
+/* Wake a stopped producer even if the app is paused or its ring is full.
+ * Call before joining it. The thread's sink is disposed by its TLS destructor. */
+void tl_audio_cancel_thread(pthread_t producer);
+/* Called on the producer, before its first write. The callback must be a
+ * nonblocking atomic lifetime check. Closes the cancel-before-sink-open race. */
+void tl_audio_set_thread_alive(bool (*alive)(void *), void *context);
 
 #ifdef __cplusplus
 }

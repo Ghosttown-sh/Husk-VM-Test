@@ -1,161 +1,225 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #define _DARWIN_C_SOURCE
 #include "husk-tl-audio.h"
-
 #include <AudioToolbox/AudioToolbox.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
 #include "husk-tl-bionic.h"
 #include "husk-tl-cocos.h"
-
 #define NBUF 3
 #define FRAMES_PER_BUF 1024
 #define RING_FRAMES 8192
 
-static struct {
+/* Each AAudio/OpenSL/FMOD mixer has its own persistent producer thread.
+ * A single shared ring concatenated simultaneous sounds (including silence)
+ * and played 44.1 kHz samples at whichever rate opened first. Core Audio mixes
+ * independent AudioQueues and converts each declared rate to the device rate. */
+typedef struct audio_sink {
     pthread_mutex_t mu;
     pthread_cond_t cv;
+    pthread_t owner;
+    struct audio_sink *next;
     AudioQueueRef q;
     AudioQueueBufferRef bufs[NBUF];
-    int rate, channels;
+    int input_rate, rate, channels;
     int16_t *ring;
-    size_t head, count;           /* frames */
-    bool paused, failed;
-} A = { .mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER };
-
-/* The audio thread asks for samples; an empty ring is silence, never a wait. */
-static void on_buffer(void *user, AudioQueueRef q, AudioQueueBufferRef b)
-{
-    (void)user;
-    int16_t *out = b->mAudioData;
-    size_t want = FRAMES_PER_BUF, ch = (size_t)A.channels;
-    pthread_mutex_lock(&A.mu);
-    size_t take = A.paused ? 0 : (A.count < want ? A.count : want);
-    for (size_t i = 0; i < take; i++)
-        for (size_t c = 0; c < ch; c++) out[i * ch + c] = A.ring[((A.head + i) % RING_FRAMES) * ch + c];
-    A.head = (A.head + take) % RING_FRAMES;
-    A.count -= take;
-    pthread_cond_broadcast(&A.cv);
-    pthread_mutex_unlock(&A.mu);
-    if (take < want) memset(out + take * ch, 0, (want - take) * ch * sizeof(int16_t));
-    b->mAudioDataByteSize = (UInt32)(want * ch * sizeof(int16_t));
-    AudioQueueEnqueueBuffer(q, b, 0, NULL);
+    size_t head, count;
+    bool paused, cancelled, failed, wrote, have_prev;
+    int16_t prev[2];
+    uint64_t written, drained, missing;
+    double report_at;
+} audio_sink;
+static pthread_mutex_t sinks_mu=PTHREAD_MUTEX_INITIALIZER;
+static audio_sink *sinks;
+static bool all_paused;
+static pthread_key_t sink_key;
+static pthread_once_t sink_once=PTHREAD_ONCE_INIT;
+static _Thread_local bool (*producer_alive)(void *);
+static _Thread_local void *producer_context;
+void tl_audio_set_thread_alive(bool (*alive)(void *),void *context) {
+    producer_alive=alive; producer_context=context;
 }
-
-static bool open_queue(int rate, int channels)
-{
-    AudioStreamBasicDescription f = { 0 };
-    f.mSampleRate = rate; f.mFormatID = kAudioFormatLinearPCM;
-    f.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
-    f.mBitsPerChannel = 16; f.mChannelsPerFrame = (UInt32)channels; f.mFramesPerPacket = 1;
-    f.mBytesPerFrame = f.mBytesPerPacket = (UInt32)(channels * 2);
-    OSStatus st = AudioQueueNewOutput(&f, on_buffer, NULL, NULL, NULL, 0, &A.q);
-    if (st != noErr) { tl_log_line("audio: AudioQueueNewOutput failed (%d)", (int)st); return false; }
-    A.ring = calloc((size_t)RING_FRAMES * (size_t)channels, sizeof(int16_t));
-    A.rate = rate; A.channels = channels;
-    for (int i = 0; i < NBUF; i++) {
-        AudioQueueAllocateBuffer(A.q, FRAMES_PER_BUF * (UInt32)channels * 2, &A.bufs[i]);
-        memset(A.bufs[i]->mAudioData, 0, FRAMES_PER_BUF * (size_t)channels * 2);
-        A.bufs[i]->mAudioDataByteSize = FRAMES_PER_BUF * (UInt32)channels * 2;
-        AudioQueueEnqueueBuffer(A.q, A.bufs[i], 0, NULL);
+static bool stopping(audio_sink *s) {
+    if(producer_alive && !producer_alive(producer_context)) s->cancelled=true;
+    return s->cancelled || s->failed;
+}
+static double seconds(void) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
+    return (double)ts.tv_sec+(double)ts.tv_nsec/1e9;
+}
+static void sleep_for(int frames,int rate) {
+    if(frames<=0 || rate<=0) return;
+    int64_t ns=(int64_t)frames*1000000000/rate;
+    struct timespec ts={(time_t)(ns/1000000000),(long)(ns%1000000000)};
+    nanosleep(&ts,NULL);
+}
+/* Device callbacks never wait for samples and touch only their own sink. */
+static void on_buffer(void *user,AudioQueueRef q,AudioQueueBufferRef b) {
+    audio_sink *s=user;
+    size_t ch=(size_t)s->channels,want=FRAMES_PER_BUF;
+    pthread_mutex_lock(&s->mu);
+    size_t take=(s->paused || s->cancelled)?0:(s->count<want?s->count:want);
+    size_t first=take<RING_FRAMES-s->head?take:RING_FRAMES-s->head;
+    memcpy(b->mAudioData,s->ring+s->head*ch,first*ch*2);
+    memcpy((int16_t *)b->mAudioData+first*ch,s->ring,(take-first)*ch*2);
+    s->head=(s->head+take)%RING_FRAMES; s->count-=take; s->drained+=take;
+    if(s->wrote && !s->paused && !s->cancelled) s->missing+=want-take;
+    pthread_cond_broadcast(&s->cv); pthread_mutex_unlock(&s->mu);
+    memset((int16_t *)b->mAudioData+take*ch,0,(want-take)*ch*2);
+    b->mAudioDataByteSize=(UInt32)(want*ch*2);
+    OSStatus st=AudioQueueEnqueueBuffer(q,b,0,NULL);
+    if(st!=noErr) {
+        pthread_mutex_lock(&s->mu); s->failed=true;
+        pthread_cond_broadcast(&s->cv); pthread_mutex_unlock(&s->mu);
     }
-    st = AudioQueueStart(A.q, NULL);
-    if (st != noErr) { tl_log_line("audio: AudioQueueStart failed (%d)", (int)st); return false; }
-    tl_log_line("audio: output running, %d Hz, %d channel(s)", rate, channels);
-    return true;
 }
-
-static void sleep_for(int frames, int rate)
-{
-    struct timespec ts = { 0, (long)((double)frames * 1e9 / rate) };
-    nanosleep(&ts, NULL);
+static void destroy_sink(void *ptr) {
+    audio_sink *s=ptr; if(!s) return;
+    pthread_mutex_lock(&sinks_mu);
+    audio_sink **p=&sinks;
+    while(*p && *p!=s) p=&(*p)->next;
+    if(*p) *p=s->next;
+    pthread_mutex_unlock(&sinks_mu);
+    /* Immediate disposal joins callbacks; never hold their mutex here. */
+    if(s->q) AudioQueueDispose(s->q,true);
+    free(s->ring); pthread_cond_destroy(&s->cv); pthread_mutex_destroy(&s->mu); free(s);
 }
-
-static void ring_write(const int16_t *samples, int frames, int channels, int rate);
-
-/*
- * The mixer's write. A game mixing at a low rate (Unity's FMOD runs at 24 kHz) is played at twice that: each frame, then the
- * point halfway to the next. The iPhone played Subway Surfers' 24 kHz output high-pitched and broken while the same samples
- * were right on a Mac, and every game that sounds right there runs at 44.1 or 48 kHz -- so the queue is only ever opened
- * at one of those.
- */
-static void host_write(const int16_t *samples, int frames, int channels, int rate)
-{
-    if (rate > 0 && rate * 2 <= 48000 && channels > 0 && channels <= 2 && frames > 0) {
-        static int16_t prev[2];
-        static bool have_prev;
-        int16_t *up = malloc((size_t)frames * 2 * (size_t)channels * sizeof(int16_t));
-        if (up) {
-            for (int f = 0; f < frames; f++)
-                for (int c = 0; c < channels; c++) {
-                    int16_t cur = samples[(size_t)f * channels + c];
-                    int16_t before = f > 0 ? samples[(size_t)(f - 1) * channels + c] : (have_prev ? prev[c] : cur);
-                    up[(size_t)(2 * f) * channels + c] = (int16_t)(((int)before + cur) / 2);
-                    up[(size_t)(2 * f + 1) * channels + c] = cur;
-                }
-            for (int c = 0; c < channels; c++) prev[c] = samples[(size_t)(frames - 1) * channels + c];
-            have_prev = true;
-            ring_write(up, frames * 2, channels, rate * 2);
-            free(up);
-            return;
+static int key_error;
+static void make_key(void) { key_error=pthread_key_create(&sink_key,destroy_sink); }
+static audio_sink *new_sink(int rate,int channels) {
+    audio_sink *s=calloc(1,sizeof(*s)); if(!s) return NULL;
+    pthread_mutex_init(&s->mu,NULL); pthread_cond_init(&s->cv,NULL);
+    s->owner=pthread_self(); s->input_rate=rate; s->channels=channels;
+    /* Preserve the low-rate FMOD workaround, with private resampling history. */
+    s->rate=rate<=24000?rate*2:rate;
+    s->ring=calloc((size_t)RING_FRAMES*channels,sizeof(int16_t));
+    if(!s->ring) { destroy_sink(s); return NULL; }
+    AudioStreamBasicDescription f={0};
+    f.mSampleRate=s->rate; f.mFormatID=kAudioFormatLinearPCM;
+    f.mFormatFlags=kLinearPCMFormatFlagIsSignedInteger|kLinearPCMFormatFlagIsPacked;
+    f.mBitsPerChannel=16; f.mChannelsPerFrame=(UInt32)channels; f.mFramesPerPacket=1;
+    f.mBytesPerFrame=f.mBytesPerPacket=(UInt32)channels*2;
+    OSStatus st=AudioQueueNewOutput(&f,on_buffer,s,NULL,NULL,0,&s->q);
+    for(int i=0;st==noErr && i<NBUF;i++) {
+        st=AudioQueueAllocateBuffer(s->q,FRAMES_PER_BUF*(UInt32)channels*2,&s->bufs[i]);
+        if(st!=noErr) break;
+        memset(s->bufs[i]->mAudioData,0,FRAMES_PER_BUF*(size_t)channels*2);
+        s->bufs[i]->mAudioDataByteSize=FRAMES_PER_BUF*(UInt32)channels*2;
+        st=AudioQueueEnqueueBuffer(s->q,s->bufs[i],0,NULL);
+    }
+    if(st==noErr) {
+        pthread_mutex_lock(&sinks_mu);
+        s->paused=all_paused;
+        if(!s->paused) st=AudioQueueStart(s->q,NULL);
+        if(st==noErr) { s->next=sinks; sinks=s; }
+        pthread_mutex_unlock(&sinks_mu);
+    }
+    if(st!=noErr) {
+        tl_log_line("audio: independent output creation failed (%d)",(int)st);
+        destroy_sink(s); return NULL;
+    }
+    s->report_at=seconds();
+    tl_log_line("audio: independent producer output %p, %d Hz, %d channel(s)",(void *)s,s->rate,channels);
+    return s;
+}
+static bool ring_write(audio_sink *s,const int16_t *samples,int frames) {
+    pthread_mutex_lock(&s->mu);
+    int done=0; size_t ch=(size_t)s->channels;
+    while(done<frames && !stopping(s)) {
+        while((s->count==RING_FRAMES || s->paused) && !stopping(s)) {
+            if(producer_alive) {
+                struct timespec t; clock_gettime(CLOCK_REALTIME,&t);
+                t.tv_nsec+=20000000;
+                if(t.tv_nsec>=1000000000) { t.tv_sec++; t.tv_nsec-=1000000000; }
+                pthread_cond_timedwait(&s->cv,&s->mu,&t);
+            } else pthread_cond_wait(&s->cv,&s->mu);
+        }
+        if(stopping(s)) break;
+        size_t n=(size_t)(frames-done),room=RING_FRAMES-s->count;
+        if(n>room) n=room;
+        size_t tail=(s->head+s->count)%RING_FRAMES,first=n<RING_FRAMES-tail?n:RING_FRAMES-tail;
+        memcpy(s->ring+tail*ch,samples+(size_t)done*ch,first*ch*2);
+        memcpy(s->ring,samples+((size_t)done+first)*ch,(n-first)*ch*2);
+        s->count+=n; s->written+=n; s->wrote=true; done+=(int)n;
+    }
+    bool ok=done==frames;
+    double now=seconds();
+    uint64_t written=s->written,drained=s->drained,missing=s->missing;
+    bool report=now-s->report_at>=5.0;
+    if(report) s->report_at=now;
+    pthread_mutex_unlock(&s->mu);
+    /* Empty frames include intentional gaps between effects, not just xruns. */
+    if(report) tl_log_line("audio: producer %p rate=%d written=%llu drained=%llu empty_frames=%llu",
+        (void *)s,s->rate,(unsigned long long)written,(unsigned long long)drained,(unsigned long long)missing);
+    return ok;
+}
+static void host_write(const int16_t *samples,int frames,int channels,int rate) {
+    if(!samples || frames<=0 || channels<1 || channels>2 || rate<=0) return;
+    if(producer_alive && !producer_alive(producer_context)) return;
+    pthread_once(&sink_once,make_key);
+    if(key_error) { sleep_for(frames,rate); return; }
+    audio_sink *s=pthread_getspecific(sink_key);
+    if(s && (s->input_rate!=rate || s->channels!=channels)) {
+        pthread_setspecific(sink_key,NULL); destroy_sink(s); s=NULL;
+    }
+    if(!s) {
+        s=new_sink(rate,channels);
+        if(!s) { sleep_for(frames,rate); return; }
+        if(pthread_setspecific(sink_key,s)!=0) { destroy_sink(s); sleep_for(frames,rate); return; }
+    }
+    if(s->rate!=rate) {
+        int16_t up[512*2*2]; /* Bounded scratch, no streaming heap allocation. */
+        for(int done=0;done<frames;) {
+            int n=frames-done; if(n>512) n=512;
+            for(int f=0;f<n;f++) for(int c=0;c<channels;c++) {
+                int16_t cur=samples[(size_t)(done+f)*channels+c];
+                int16_t before=s->have_prev?s->prev[c]:cur;
+                up[(size_t)(2*f)*channels+c]=(int16_t)(((int)before+cur)/2);
+                up[(size_t)(2*f+1)*channels+c]=cur; s->prev[c]=cur;
+                if(c==channels-1) s->have_prev=true;
+            }
+            if(!ring_write(s,up,n*2)) break;
+            done+=n;
+        }
+    } else if(!ring_write(s,samples,frames)) sleep_for(frames,rate);
+}
+static void muted_write(const int16_t *samples,int frames,int channels,int rate) {
+    static _Thread_local int seen,peak;
+    static _Thread_local uint64_t loud,total;
+    if(getenv("TL_AUDIO_STATS")) {
+        for(int i=0;i<frames*channels;i++) {
+            int v=samples[i]<0?-samples[i]:samples[i];
+            if(v>peak) peak=v;
+            if(v>64) loud++;
+        }
+        total+=(uint64_t)frames*channels;
+        if((seen+=frames)>=rate) {
+            tl_log_line("audio: %d Hz x %d, peak %d, %.0f%% of samples audible",rate,channels,peak,100.0*loud/(total?total:1));
+            seen=peak=0; loud=total=0;
         }
     }
-    ring_write(samples, frames, channels, rate);
+    sleep_for(frames,rate);
 }
-
-/* Copy into the ring, blocking while it is full (that is the pacing). */
-static void ring_write(const int16_t *samples, int frames, int channels, int rate)
-{
-    pthread_mutex_lock(&A.mu);
-    if (!A.q && !A.failed) { if (!open_queue(rate, channels)) A.failed = true; }
-    if (A.failed || channels != A.channels) { pthread_mutex_unlock(&A.mu); sleep_for(frames, rate); return; }
-    int done = 0;
-    while (done < frames) {
-        while (A.count >= RING_FRAMES || A.paused) pthread_cond_wait(&A.cv, &A.mu);
-        size_t room = RING_FRAMES - A.count, n = (size_t)(frames - done) < room ? (size_t)(frames - done) : room;
-        size_t tail = (A.head + A.count) % RING_FRAMES;
-        for (size_t i = 0; i < n; i++)
-            memcpy(&A.ring[((tail + i) % RING_FRAMES) * (size_t)channels], &samples[(size_t)(done + (int)i) * (size_t)channels], (size_t)channels * sizeof(int16_t));
-        A.count += n;
-        done += (int)n;
+void tl_audio_install(void) { tl_cocos_audio_hook=getenv("TL_AUDIO_MUTE")?muted_write:host_write; }
+void tl_audio_set_paused(bool paused) {
+    pthread_mutex_lock(&sinks_mu); all_paused=paused;
+    for(audio_sink *s=sinks;s;s=s->next) {
+        pthread_mutex_lock(&s->mu); s->paused=paused;
+        pthread_cond_broadcast(&s->cv); pthread_mutex_unlock(&s->mu);
+        /* Queue control can synchronize with a callback; do not hold s->mu. */
+        OSStatus st=paused?AudioQueuePause(s->q):AudioQueueStart(s->q,NULL);
+        if(st!=noErr) tl_log_line("audio: %s failed (%d)",paused?"pause":"resume",(int)st);
     }
-    pthread_mutex_unlock(&A.mu);
+    pthread_mutex_unlock(&sinks_mu);
 }
-
-/* TL_AUDIO_MUTE: pace like a device but make no sound (for test runs on a Mac). TL_AUDIO_STATS=1 also logs, about once a second,
- * how loud the game's output was, so a silent run still shows whether the game is making sound. */
-static void muted_write(const int16_t *samples, int frames, int channels, int rate)
-{
-    static int stats = -1, seen, peak;
-    static long loud, total;
-    if (stats < 0) stats = getenv("TL_AUDIO_STATS") != NULL;
-    if (stats) {
-        for (int i = 0; i < frames * channels; i++) {
-            int v = samples[i] < 0 ? -samples[i] : samples[i];
-            if (v > peak) peak = v;
-            if (v > 64) loud++;
-        }
-        total += frames * channels;
-        if ((seen += frames) >= rate) {
-            tl_log_line("audio: %d Hz x %d, peak %d, %.0f%% of samples audible", rate, channels, peak, 100.0 * loud / (total ? total : 1));
-            seen = 0; peak = 0; loud = 0; total = 0;
-        }
+void tl_audio_cancel_thread(pthread_t producer) {
+    pthread_mutex_lock(&sinks_mu);
+    for(audio_sink *s=sinks;s;s=s->next) if(pthread_equal(s->owner,producer)) {
+        pthread_mutex_lock(&s->mu); s->cancelled=true;
+        pthread_cond_broadcast(&s->cv); pthread_mutex_unlock(&s->mu);
     }
-    sleep_for(frames, rate);
-}
-
-void tl_audio_install(void) { tl_cocos_audio_hook = getenv("TL_AUDIO_MUTE") ? muted_write : host_write; }
-
-void tl_audio_set_paused(bool paused)
-{
-    pthread_mutex_lock(&A.mu);
-    A.paused = paused;
-    if (A.q) { if (paused) AudioQueuePause(A.q); else AudioQueueStart(A.q, NULL); }
-    pthread_cond_broadcast(&A.cv);
-    pthread_mutex_unlock(&A.mu);
+    pthread_mutex_unlock(&sinks_mu);
 }
