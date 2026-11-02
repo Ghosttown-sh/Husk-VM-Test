@@ -111,6 +111,17 @@ if [ -f "$APP_PLIST" ]; then
     echo "==> stamped build $COMMIT"
 fi
 
+# InfoPlist.strings overrides the main plist on localized devices. In particular,
+# the Chinese display name would otherwise make the separate test install look
+# identical to the user's original Husk even with the new bundle identifier.
+if [ "${HUSK_TEST_BUILD:-0}" = 1 ]; then
+    for LOCALIZED_PLIST in "$APP"/*.lproj/InfoPlist.strings; do
+        [ -f "$LOCALIZED_PLIST" ] || continue
+        plutil -replace CFBundleDisplayName -string "Husk VM Test" "$LOCALIZED_PLIST"
+        plutil -replace CFBundleName -string "Husk VM Test" "$LOCALIZED_PLIST"
+    done
+fi
+
 echo "==> validating bundle"
 PLIST="$APP/Info.plist"
 rc=0

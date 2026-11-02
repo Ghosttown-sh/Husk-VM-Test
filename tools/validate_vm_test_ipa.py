@@ -42,6 +42,11 @@ def validate(path,commit):
         info=plistlib.loads(z.read(root+'Info.plist'))
         assert info['CFBundleIdentifier']=='com.husk.vmtest'
         assert info['CFBundleDisplayName']=='Husk VM Test'
+        for name in names:
+            if name.startswith(root) and name[len(root):].count('/') == 1 and name.endswith('.lproj/InfoPlist.strings'):
+                localized=plistlib.loads(z.read(name))
+                assert localized.get('CFBundleDisplayName')=='Husk VM Test', f'{name}: test name is hidden by localization'
+                assert localized.get('CFBundleName')=='Husk VM Test', f'{name}: wrong localized bundle name'
         assert 2 in info['UIDeviceFamily'] and 'iPhoneOS' in info['CFBundleSupportedPlatforms']
         assert info['HuskBuildCommit']==commit, (info.get('HuskBuildCommit'),commit)
         schemes=[s for t in info['CFBundleURLTypes'] for s in t['CFBundleURLSchemes']]
