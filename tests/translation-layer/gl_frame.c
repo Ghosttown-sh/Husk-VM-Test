@@ -16,7 +16,7 @@ static void *image(void *d,void *c,unsigned t,void *b,const int *a) { (void)d; a
 static unsigned del_image(void *d,void *i) { (void)d;assert(i);images--;return 1; }
 static void *sync_new(void *d,unsigned t,const int *a) { (void)d;(void)a;assert(t==0x30f9);if(fence_fail)return NULL;fences++;return (void *)(uintptr_t)++id; }
 static unsigned sync_del(void *d,void *s) { (void)d;assert(s && fences);fences--;destroyed++;return 1; }
-static int wait(void *d,void *s,int flags) { (void)d;assert(s && !flags);if(expected_wait)assert(s==expected_wait);waits++;return !wait_fail; }
+static int mock_server_wait(void *d,void *s,int flags) { (void)d;assert(s && !flags);if(expected_wait)assert(s==expected_wait);waits++;return !wait_fail; }
 static int client(void *d,void *s,int flags,uint64_t time) { (void)d;(void)s;assert(!flags && time==1000000000ULL);return 0x30f5; }
 static void get(unsigned n,int *v) { *v = n==0x8069 ? tex : n==0x8caa ? fb : n==0x88ef ? unpack : 0; }
 static void gen(int n,uint32_t *t) { assert(n==1);*t=++id; }
@@ -35,7 +35,7 @@ static void *resolve(const char *name) {
 #define ENTRY(n,f) if(!strcmp(name,n))return (void *)f
     ENTRY("eglQueryString",query);ENTRY("glGetString",string);ENTRY("eglGetCurrentContext",context);
     ENTRY("eglCreateImageKHR",image);ENTRY("eglDestroyImageKHR",del_image);ENTRY("eglCreateSyncKHR",sync_new);
-    ENTRY("eglDestroySyncKHR",sync_del);ENTRY("eglWaitSyncKHR",wait);ENTRY("eglClientWaitSyncKHR",client);
+    ENTRY("eglDestroySyncKHR",sync_del);ENTRY("eglWaitSyncKHR",mock_server_wait);ENTRY("eglClientWaitSyncKHR",client);
     ENTRY("glGetIntegerv",get);ENTRY("glGenTextures",gen);ENTRY("glDeleteTextures",del);ENTRY("glBindTexture",bind);
     ENTRY("glTexParameteri",param);ENTRY("glTexImage2D",storage);ENTRY("glCopyTexSubImage2D",copy);
     ENTRY("glBindFramebuffer",frame);ENTRY("glBindBuffer",buffer);ENTRY("glEGLImageTargetTexture2DOES",target);

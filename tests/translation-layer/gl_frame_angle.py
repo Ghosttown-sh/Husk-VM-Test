@@ -101,6 +101,27 @@ def main():
         times.append((time.perf_counter()-start)*1000)
     print('PASS: 30 real GPU image transfers at 2420x1668 across nonsharing ES3/ES2 contexts; exact pixel colors, guest framebuffer/texture/error preserved')
     print(f'Host copy/fence/verification-readback mean {sum(times)/len(times):.2f} ms (includes test-only pixel read; not iPad FPS)')
+    # Queue several producer/consumer turns with no CPU readback/finish between
+    # them. Snapshot each consumption on the GPU, then verify all snapshots.
+    # This catches reuse hazards that a per-frame synchronous read could hide.
+    snapshots=(U*30)();gen(30,snapshots)
+    copy_image=fn('glCopyTexImage2D',None,U,I,U,I,I,I,I,I)
+    for index in range(30):
+        assert current(display,surface,surface,producer)
+        bindfb(0x8d40,0);color(index%2,1-index%2,0,1);clear(0x4000)
+        assert bridge.tl_gl_frame_publish(frame,surface,width,height)
+        assert current(display,ui,ui,consumer)
+        assert bridge.tl_gl_frame_acquire(frame,C.byref(tex))
+        bindfb(0x8d40,target);attach(0x8d40,0x8ce0,0xde1,tex,0)
+        bind(0xde1,snapshots[index]);copy_image(0xde1,0,0x1908,0,0,1,1,0)
+        assert error()==0
+        bridge.tl_gl_frame_release(frame)
+    for index in range(30):
+        attach(0x8d40,0x8ce0,0xde1,snapshots[index],0)
+        assert status(0x8d40)==0x8cd5
+        read(0,0,1,1,0x1908,0x1401,pixel)
+        assert list(pixel)==[255*(index%2),255*(1-index%2),0,255],(index,list(pixel))
+    print('PASS: 30 queued reuse cycles without per-frame CPU reads; every GPU snapshot retains its original color')
     assert current(display,surface,surface,producer)
     bridge.tl_gl_frame_reset(frame)
     assert current(display,ui,ui,consumer)
