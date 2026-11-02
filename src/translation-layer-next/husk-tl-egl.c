@@ -840,6 +840,10 @@ static void *egl_resolve(const char *name)
 void *tl_egl_host_proc(const char *name)
 {
     if (!E.ready || !a_eglGetProcAddress) return NULL;
+#if defined(__APPLE__)
+    extern void *tl_gl_frame_metal_image(void *,int,int,void *(*)(const char *));
+    if (!strcmp(name,"huskCreateMetalFrameImage")) return (void *)tl_gl_frame_metal_image;
+#endif
     void *p = a_eglGetProcAddress(name);
     if (!p && name[0] == 'e') p = dlsym(E.egl,name);
     return p;

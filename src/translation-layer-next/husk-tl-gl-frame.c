@@ -12,7 +12,9 @@ struct tl_gl_frame {
     void *dpy, *producer, *consumer, *surface, *image, *written, *read;
     uint32_t src, dst;
     int width, height;
-    bool imported, failed, async_sync;
+    bool imported, failed, async_sync, metal;
+    void *(*resolve)(const char *);
+    void *(*metal_image)(void *, int, int, void *(*)(const char *));
     void *error_context;
     unsigned guest_errors;
     const char *(*query)(void *, int);
@@ -60,9 +62,12 @@ tl_gl_frame *tl_gl_frame_create(void *(*resolve)(const char *), void *dpy)
     LOAD(target,"glEGLImageTargetTexture2DOES"); LOAD(flush,"glFlush"); LOAD(finish,"glFinish"); LOAD(error,"glGetError");
 #undef LOAD
     const char *egl = f->query(dpy,0x3055), *gl = (const char *)f->string(0x1f03);
-    /* EGL_KHR_image includes the original texture-2D source specification;
-     * Metal advertises that combined extension rather than its split form. */
-    if (!(extension(egl,"EGL_KHR_image") || (extension(egl,"EGL_KHR_image_base") &&
+    f->resolve = resolve;
+    *(void **)(&f->metal_image) = resolve("huskCreateMetalFrameImage");
+    /* ANGLE Metal imports native MTLTexture images but cannot export GL
+     * textures. Its generic EGL_KHR_image flag alone is insufficient. */
+    f->metal = extension(egl,"EGL_ANGLE_metal_texture_client_buffer") && f->metal_image;
+    if (!(f->metal || (extension(egl,"EGL_KHR_image_base") &&
           extension(egl,"EGL_KHR_gl_texture_2D_image"))) ||
         !extension(gl,"GL_OES_EGL_image")) goto fail;
     f->async_sync = extension(egl,"EGL_KHR_fence_sync") && extension(egl,"EGL_KHR_wait_sync");
@@ -137,11 +142,16 @@ bool tl_gl_frame_publish(tl_gl_frame *f, void *surface, int w, int h)
     if (!f->image) {
         f->param(0x0de1,0x2801,0x2601); f->param(0x0de1,0x2800,0x2601);
         f->param(0x0de1,0x2802,0x812f); f->param(0x0de1,0x2803,0x812f);
-        f->buffer(0x88ec,0); /* NULL must not be an offset into a guest unpack PBO */
-        f->storage(0x0de1,0,0x8058,w,h,0,0x1908,0x1401,NULL);
-        f->buffer(0x88ec,(uint32_t)unpack);
-        const int attributes[] = {0x30d2,1,0x3038}; /* EGL_IMAGE_PRESERVED_KHR */
-        f->image = f->create_image(f->dpy,ctx,0x30b1,(void *)(uintptr_t)f->src,attributes);
+        if (f->metal) {
+            f->image = f->metal_image(f->dpy,w,h,f->resolve);
+            if (f->image) f->target(0x0de1,f->image);
+        } else {
+            f->buffer(0x88ec,0); /* NULL must not be an offset into a guest unpack PBO */
+            f->storage(0x0de1,0,0x8058,w,h,0,0x1908,0x1401,NULL);
+            f->buffer(0x88ec,(uint32_t)unpack);
+            const int attributes[] = {0x30d2,1,0x3038}; /* EGL_IMAGE_PRESERVED_KHR */
+            f->image = f->create_image(f->dpy,ctx,0x30b1,(void *)(uintptr_t)f->src,attributes);
+        }
         if (!f->image) { f->failed = true; goto done; }
         f->width = w; f->height = h;
     }

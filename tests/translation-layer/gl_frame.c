@@ -7,9 +7,9 @@
 static void *ctx = (void *)1;
 static unsigned id=20, images, fences, destroyed, copies, waits, finishes, errors, injected;
 static int tex=7, fb=9, unpack=11;
-static bool image_fail, wait_fail, fence_fail, import_fail, missing_extension, combined_image;
+static bool image_fail, wait_fail, fence_fail, import_fail, missing_extension, combined_image, native_metal;
 static void *expected_wait;
-static const char *query(void *d,int n) { (void)d;(void)n; return missing_extension ? "EGL_KHR_image_base_suffix" : combined_image ? "EGL_KHR_image" : "EGL_KHR_image_base EGL_KHR_gl_texture_2D_image EGL_KHR_fence_sync EGL_KHR_wait_sync"; }
+static const char *query(void *d,int n) { (void)d;(void)n; return missing_extension ? "EGL_KHR_image_base_suffix" : native_metal ? "EGL_KHR_image EGL_ANGLE_metal_texture_client_buffer" : combined_image ? "EGL_KHR_image" : "EGL_KHR_image_base EGL_KHR_gl_texture_2D_image EGL_KHR_fence_sync EGL_KHR_wait_sync"; }
 static const unsigned char *string(unsigned n) { return (const unsigned char *)(n==0x1f02 ? "OpenGL ES 3.0" : "GL_OES_EGL_image"); }
 static void *context(void) { return ctx; }
 static void *image(void *d,void *c,unsigned t,void *b,const int *a) { (void)d; assert(c==ctx && t==0x30b1 && b && a[0]==0x30d2); if(image_fail)return NULL; images++;return (void *)(uintptr_t)++id; }
@@ -31,8 +31,10 @@ static void target(unsigned t,void *i) { assert(t==0xde1&&i);if(import_fail)erro
 static void flush(void) {}
 static void finish(void) { finishes++; }
 static unsigned error(void) { unsigned e=errors;errors=0;return e; }
+static void *metal_image(void *d,int w,int h,void *(*r)(const char *)) { assert(d && w>0 && h>0 && r);if(image_fail)return NULL;images++;return (void *)(uintptr_t)++id; }
 static void *resolve(const char *name) {
 #define ENTRY(n,f) if(!strcmp(name,n))return (void *)f
+    ENTRY("huskCreateMetalFrameImage",metal_image);
     ENTRY("eglQueryString",query);ENTRY("glGetString",string);ENTRY("eglGetCurrentContext",context);
     ENTRY("eglCreateImageKHR",image);ENTRY("eglDestroyImageKHR",del_image);ENTRY("eglCreateSyncKHR",sync_new);
     ENTRY("eglDestroySyncKHR",sync_del);ENTRY("eglWaitSyncKHR",mock_server_wait);ENTRY("eglClientWaitSyncKHR",client);
@@ -89,8 +91,9 @@ int main(void) {
     ctx=(void *)1;assert(tl_gl_frame_acquire(f,&t));tl_gl_frame_release(f);fence_fail=false;tl_gl_frame_destroy(f);
     assert(finishes==2 && !images && !fences);
     puts("PASS: unsupported image/copy/import/wait errors refuse; fence failure uses real glFinish completion, never fake signalling");
-    combined_image=true;f=fresh();ctx=(void *)2;assert(tl_gl_frame_publish(f,(void *)3,64,64));
+    combined_image=true;assert(!fresh());combined_image=false;
+    native_metal=true;f=fresh();ctx=(void *)2;assert(tl_gl_frame_publish(f,(void *)3,64,64));
     ctx=(void *)1;assert(tl_gl_frame_acquire(f,&t));tl_gl_frame_release(f);tl_gl_frame_destroy(f);
     assert(finishes==4 && !images && !fences);
-    puts("PASS: combined EGL_KHR_image supported; missing fence extensions use real completion");
+    puts("PASS: Metal imports a native image into both namespaces; generic image flag alone refused; missing fences use real completion");
 }

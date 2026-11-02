@@ -22,6 +22,9 @@ def main():
     gles=loader(str(directory/('libGLESv2'+suffix)))
     address=egl.eglGetProcAddress;address.restype=C.c_void_p;address.argtypes=[C.c_char_p]
     def resolve(name):
+        if name == b'huskCreateMetalFrameImage':
+            try: return C.cast(bridge.tl_gl_frame_metal_image,C.c_void_p).value
+            except AttributeError: return None
         ptr=address(name)
         if not ptr:
             for lib in (egl,gles):

@@ -17,8 +17,13 @@ No new device performance log was available when implementing this change.
 
 ## Change
 
-`husk-tl-gl-frame.c` copies the default framebuffer into a GPU texture, exports
-its storage through EGLImage, and imports it into the existing UI compositor.
+`husk-tl-gl-frame.c` copies the default framebuffer into a GPU texture and shares
+its storage through EGLImage with the existing UI compositor. On Metal,
+`husk-tl-metal-frame.m` creates a native texture on ANGLE's queried MTLDevice and
+imports it into both independent GL namespaces. ANGLE Metal supports external
+Metal image imports but cannot export ordinary GL texture images; the generic
+`EGL_KHR_image` extension alone must not be mistaken for that capability.
+Other backends with the explicit GL texture image extension can export directly.
 Guest and host texture namespaces remain independent; Java overlays, touch
 coordinates, resolution and the APK are unchanged. EGL producer/consumer fences
 and real server waits protect reuse; a driver without the fence extensions uses
@@ -62,6 +67,8 @@ includes this test overhead and must not be represented as iPad performance.
 - [EGL fence sync](https://registry.khronos.org/EGL/extensions/KHR/EGL_KHR_fence_sync.txt)
 - [EGL server wait](https://registry.khronos.org/EGL/extensions/KHR/EGL_KHR_wait_sync.txt)
 - [ANGLE Metal capabilities](https://github.com/google/angle/blob/main/src/libANGLE/renderer/metal/DisplayMtl.mm)
+- [Metal texture image import](https://github.com/google/angle/blob/main/extensions/EGL_ANGLE_metal_texture_client_buffer.txt)
+- [Query ANGLE's Metal device](https://github.com/google/angle/blob/main/extensions/EGL_ANGLE_device_metal.txt)
 
 Remaining physical check: update the existing Husk VM Test, launch the same app,
 observe animation and touch responsiveness, and load/edit/save a chart. If slow,
