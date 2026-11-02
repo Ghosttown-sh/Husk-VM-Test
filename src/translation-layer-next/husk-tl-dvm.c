@@ -971,6 +971,19 @@ void tl_dvm_print_stack(FILE *f, int max)
     }
 }
 
+static void allocation_failure_stack(void)
+{
+    /* Use cached method names/signatures and fixed stack arrays only. Calling
+     * Throwable.getStackTrace here would allocate again and lose the evidence. */
+    void *frames[32]; uint32_t pcs[32];
+    int n = dvm_capture_frames(frames, pcs, 32);
+    tl_log_line("dvm: first host allocation failure, %d recorded Java frames", n);
+    for (int i = 0; i < n; i++) {
+        dvm_method *m = frames[i];
+        if (m) tl_log_line("dvm: allocation at %s.%s%s @%u", m->cls->name, m->name, m->sig, pcs[i]);
+    }
+}
+
 static bool dvm_call_inner(dvm_method *m, jobj *self, const jvalue *params, jvalue *ret);
 /* TL_DVM_CALLS: comma-separated cls.method entries (class names with slashes) */
 static bool watch_hit(const char *w, const dvm_method *m)
@@ -2082,7 +2095,7 @@ static bool hook_find_field(tl_jclass *jc, const char *name, const char *sig, bo
 }
 static uint32_t hook_slots(tl_jclass *jc) { dvm_class *c = dvm_class_of(jc); return c ? c->nslots : 0; }
 
-static const tl_dvm_hooks k_hooks = { hook_attach, hook_find_method, hook_invoke, hook_find_field, hook_slots };
+static const tl_dvm_hooks k_hooks = { hook_attach, hook_find_method, hook_invoke, hook_find_field, hook_slots, allocation_failure_stack };
 
 static bool g_running;
 

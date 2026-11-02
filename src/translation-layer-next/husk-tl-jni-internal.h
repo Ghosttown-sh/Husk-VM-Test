@@ -63,6 +63,8 @@ typedef struct tl_dvm_hooks {
     bool (*find_field)(tl_jclass *jc, const char *name, const char *sig, bool is_static, tl_jclass **decl, uint32_t *slot);
     /* Instance slots an object of the class needs. */
     uint32_t (*instance_slots)(tl_jclass *jc);
+    /* Report already-recorded frames without allocating Java objects. */
+    void (*allocation_failure_stack)(void);
 } tl_dvm_hooks;
 extern const tl_dvm_hooks *tl_dvm;
 

@@ -38,16 +38,24 @@ static uint32_t hash_str(const char *s) { uint32_t h = 2166136261u; while (*s) {
 static jobj *g_oom;
 void tl_jni_allocation_failed(size_t bytes)
 {
+    static atomic_bool reported;
     tl_log_line("jni: host allocation failed bytes=%zu; using preallocated OutOfMemoryError", bytes);
     /* No class lookup, string construction or recursive allocation here. */
     if (!g_oom) { tl_log_line("jni: allocation failed before exception reserve was initialized"); abort(); }
     tl_jni_set_pending(g_oom);
+    /* The reserved exception has no allocated Throwable backtrace. Capture the
+     * interpreter's existing frames before they unwind, once per process. */
+    if (!atomic_exchange(&reported, true) && tl_dvm && tl_dvm->allocation_failure_stack)
+        tl_dvm->allocation_failure_stack();
 }
 
 static jobj *obj_alloc(uint8_t kind, tl_jclass *cls)
 {
     jobj *o = calloc(1, sizeof(*o));
-    if (!o) { tl_jni_allocation_failed(sizeof(*o)); return NULL; }
+    if (!o) {
+        tl_log_line("jni: failed object class=%s kind=%u", cls ? cls->name : "?", (unsigned)kind);
+        tl_jni_allocation_failed(sizeof(*o)); return NULL;
+    }
     o->refs = 1;
     o->kind = kind;
     o->cls = cls;

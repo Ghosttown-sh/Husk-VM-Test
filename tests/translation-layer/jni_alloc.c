@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include "husk-tl-jni-internal.h"
 static int fail_at, calls;
 static jobj *pending;
@@ -12,7 +13,9 @@ static void *fault_calloc(size_t n, size_t bytes) {
 void tl_log_line(const char *format, ...) { (void)format; }
 void tl_jni_set_pending(jobj *e) { pending=e; }
 static uint32_t slots(tl_jclass *cls) { (void)cls; return 12; }
-static const tl_dvm_hooks hooks = { .instance_slots = slots };
+static int stack_reports;
+static void report_stack(void) { assert(pending != NULL); stack_reports++; }
+static const tl_dvm_hooks hooks = { .instance_slots = slots, .allocation_failure_stack = report_stack };
 const tl_dvm_hooks *tl_dvm = &hooks;
 #define calloc fault_calloc
 #include "production_jni_alloc.inc"
@@ -31,5 +34,6 @@ int main(void) {
         for (unsigned j=0;j<o->nfields;j++) assert(o->fields[j].j==0);
         free(o->fields);free(o);
     }
-    puts("PASS: 100 object/field allocation failure cycles propagate preallocated OOM without allocating recursively; subsequent zero-filled objects recover");
+    assert(stack_reports == 1);
+    puts("PASS: 100 object/field allocation failure cycles propagate preallocated OOM without allocating recursively; first failure reports stack once; subsequent zero-filled objects recover");
 }
