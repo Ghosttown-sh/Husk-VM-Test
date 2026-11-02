@@ -52,6 +52,9 @@ def validate(path,commit):
         schemes=[s for t in info['CFBundleURLTypes'] for s in t['CFBundleURLSchemes']]
         assert schemes==['husk-vmtest']
         executables=[root+info['CFBundleExecutable']]
+        app_code=z.read(executables[0])
+        assert b'mm: released unused 4 GiB compressed heap; retry' in app_code, 'Main executable lacks the VM recovery implementation diagnostic'
+        assert b'Could not prepare RAM for the Android snapshot. See the Husk log.' in app_code, 'Main executable lacks the corrected snapshot RAM failure path'
         required=['Frameworks/libqemu-aarch64-softmmu.dylib','Frameworks/libANGLE-shared.dylib',
                   'Frameworks/libhuskps4.dylib','Frameworks/libFilePickerFix.dylib',
                   'Frameworks/MoltenVK.framework/MoltenVK','Frameworks/StikJIT.framework/StikJIT',

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Build the isolated ARM64 VM test IPA on a Mac with Xcode 26+.
 # No GitHub account, CI provider, Apple signing secret, or paid service required.
-# Prerequisites: Xcode (selected), Python 3.11+, XcodeGen, qemu-img, Rust/rustup.
+# Prerequisites: Xcode (selected), Swift 6.4+, Python 3.11+, XcodeGen, qemu-img, Rust/rustup.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,6 +28,13 @@ if [ -z "$XCODE_MAJOR" ] || [ "$XCODE_MAJOR" -lt 26 ]; then
     exit 1
 fi
 xcrun --sdk iphoneos --show-sdk-version
+SWIFT_VERSION=$(xcrun swiftc --version)
+echo "$SWIFT_VERSION"
+printf '%s\n' "$SWIFT_VERSION" | python3 -c '
+import re, sys
+m = re.search(r"Swift version (\d+)\.(\d+)", sys.stdin.read())
+assert m and tuple(map(int, m.groups())) >= (6, 4), "Vendored StikJIT requires Swift 6.4+; select a compatible TOOLCHAINS value"
+'
 python3 -c 'import sys; assert sys.version_info >= (3, 11), "Python 3.11+ required"'
 
 cd "$ROOT"
