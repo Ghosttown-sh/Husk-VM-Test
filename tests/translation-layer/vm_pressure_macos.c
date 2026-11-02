@@ -13,7 +13,12 @@ bool tl_codewrite_enabled(void) { return false; }
 bool tl_xmem_contains(const void *p) { (void)p; return false; }
 bool tl_ld_aot_contains(const void *p) { (void)p; return false; }
 int main(void) {
-    assert(getpagesize()==16384); /* run on an Apple Silicon Mac */
+    const int host_page=getpagesize();
+    assert(host_page==4096 || host_page==16384);
+    /* The Unity request/trim/commit sizes remain 16 KiB multiples on both
+     * hosts. Log the host granule so a 4 KiB Mac run cannot be mistaken for
+     * validation of the iPad's actual 16 KiB kernel behavior. */
+    printf("Darwin integration host page size: %d bytes\n",host_page);
     const uintptr_t start=0x7000000000ULL, gib=(uintptr_t)1<<30;
     husk_prepare_compressed_heap(); assert(g_compressed_heap==start);
     uintptr_t blockers[]={start+4*gib,start+4*gib+3*gib/4,start+5*gib+gib/2};
@@ -42,4 +47,5 @@ int main(void) {
         assert(mach_vm_deallocate(mach_task_self(),blockers[i],gib/2)==KERN_SUCCESS);
     }
     puts("PASS: real Mach pressure recovery, Unity alignment trim, mprotect, zero fill, writes and munmap");
+    if(host_page!=16384) puts("16 KiB host validation remains pending (this host uses 4 KiB pages).");
 }

@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Build the isolated VM test IPA on any Apple Silicon Mac with Xcode 26+.
+# Build the isolated ARM64 VM test IPA on a Mac with Xcode 26+.
 # No GitHub account, CI provider, Apple signing secret, or paid service required.
 # Prerequisites: Xcode (selected), Python 3.11+, XcodeGen, qemu-img, Rust/rustup.
 set -euo pipefail
@@ -11,10 +11,12 @@ case "$OUT" in /*) ;; *) OUT="$PWD/$OUT" ;; esac
 export DD="${DD:-$ROOT/build/derived-vm-test}"
 export HUSK_TEST_BUILD=1
 
-if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
-    echo "This build needs an Apple Silicon Mac with Xcode 26 or later." >&2
+if [ "$(uname -s)" != Darwin ]; then
+    echo "This build needs a Mac with Xcode 26 or later." >&2
     exit 1
 fi
+echo "Build host: $(uname -m); app target: ARM64 iOS device"
+echo "Darwin tests report this host's page size; 4 KiB results do not verify a 16 KiB host."
 for tool in xcodebuild xcrun clang swiftc python3 xcodegen qemu-img cargo rustup codesign ditto; do
     command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 1; }
 done

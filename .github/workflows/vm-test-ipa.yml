@@ -1,6 +1,15 @@
 name: Husk VM Test IPA
 on:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Standard free Mac runner image
+        type: choice
+        default: macos-26
+        options:
+          - macos-26
+          - macos-15
+          - macos-15-intel
 
 permissions:
   contents: read
@@ -9,8 +18,8 @@ jobs:
   # Standard hosted runners are free for public repositories. Never start this
   # job on a private repository where account billing/quotas could apply.
   build:
-    if: github.event.repository.private == false
-    runs-on: macos-26
+    if: github.event.repository.private == false && contains(fromJSON('["macos-26", "macos-15", "macos-15-intel"]'), inputs.runner)
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
