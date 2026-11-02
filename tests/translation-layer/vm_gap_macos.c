@@ -13,7 +13,7 @@
 /* An isolated range in the Mac's real task map. The synthetic heap mmap
  * fails after a reclaimed cage has already been consumed. The fallback's
  * task bounds are constrained here; all mappings/protections remain real. */
-#define START 0x5000000000ULL
+#define START 0x7200000000ULL
 #define END   (START + 0x80000000ULL)
 static bool bounded = true, inject_race;
 static vm_address_t raced;
