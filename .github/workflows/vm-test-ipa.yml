@@ -10,7 +10,7 @@ jobs:
   # job on a private repository where account billing/quotas could apply.
   build:
     if: github.event.repository.private == false
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
