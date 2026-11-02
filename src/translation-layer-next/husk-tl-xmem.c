@@ -190,16 +190,32 @@ static void near_alias(void)
     tl_log_line("xmem: the writable view is %td MiB from the executable one and no address near it is free", d >> 20);
 }
 
+static void relocate_native(tl_dual_mapping *m)
+{
+    g_x.rx = m->rx_addr; g_x.rw = m->rw_addr; g_x.size = m->size;
+    near_alias();
+    m->rw_addr = g_x.rw; m->size = g_x.size;
+}
+
 /* The phone: StikDebug's region if a debugger granted one, otherwise one the process makes for itself where the device allows that (before TXM). */
 static bool open_platform(size_t host_bytes, char *err, size_t errlen)
 {
+    /* The pool owns both original views. Let it create/publish the near view
+     * under its sharing lock, before older raw-pointer consumers can pin it. */
+    bool (*open_native)(tl_dual_mapping *, void (*)(tl_dual_mapping *)) =
+        (bool (*)(tl_dual_mapping *, void (*)(tl_dual_mapping *)))
+            dlsym(RTLD_DEFAULT, "husk_ios_jit_open_native");
+    tl_dual_mapping native = {0};
+    if (open_native && open_native(&native, relocate_native)) {
+        g_x.rx = native.rx_addr; g_x.rw = native.rw_addr; g_x.size = native.size;
+        g_x.shared = true;
+        return true;
+    }
     tl_dual_mapping *m = tl_find_stikdebug_prewarmed();
     if (m && m->rw_addr && m->rx_addr) {
-        g_x.rx = m->rx_addr;
-        g_x.rw = m->rw_addr;
-        g_x.size = m->size;
+        native = *m;
+        relocate_native(&native);
         g_x.shared = true;
-        near_alias();
         return true;
     }
     /* From iOS 26 the Trusted Execution Monitor decides what may execute, and an attempt to run unblessed memory can end the process rather than fail. Only a debugger

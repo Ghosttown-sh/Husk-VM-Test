@@ -10,6 +10,7 @@ Q="$HUSK_ROOT/third_party/build/qemu-10.0.12-utm"
 echo "[cp  ] JIT substrate -> tcg/"
 cp "$HUSK_ROOT/src/ios-jit/husk-ios-jit.c" \
    "$HUSK_ROOT/src/ios-jit/husk-ios-jit.h" \
+   "$HUSK_ROOT/src/ios-jit/husk-ios-jit-pool.inc" \
    "$HUSK_ROOT/src/ios-jit/husk-brk.S" "$Q/tcg/"
 
 # region.c is patched in place rather than copied, so a re-extracted QEMU tree
@@ -624,6 +625,7 @@ wanted = [
     "husk_ios_jit_detach",
     "husk_ios_jit_log_footprint",
     "husk_ios_jit_get_mapping",
+    "husk_ios_jit_open_native",
     "husk_ios_jit_reserve_bottom",
     "husk_ios_jit_self_route",
     "husk_ios_available_memory",

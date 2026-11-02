@@ -12,8 +12,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 
-/* macOS release kernels may disable map ranges entirely (ENOENT), whereas
- * iOS enables them. In that case model ONLY range registration/bounds over a
+/* Both macOS and iOS processes may have map ranges disabled (ENOENT). In that case model ONLY range registration/bounds over a
  * test-owned, max-protection-zero window. All resulting mappings are real.
  * The log explicitly distinguishes this from testing range_create on iOS. */
 static uintptr_t model_start, model_end;

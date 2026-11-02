@@ -39,6 +39,7 @@ typedef struct owned_range {
 } owned_range;
 static owned_range *ranges;
 static pthread_mutex_t range_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool bounds_failure_logged;
 
 static int parse_ranges(const char *s, uintptr_t out[4]) {
     for (int i = 0; i < 4; i++) {
@@ -115,7 +116,14 @@ void *tl_vm_reserve_delegated_aligned(size_t size, size_t alignment) {
     char text[128]; size_t text_size = sizeof(text) - 1;
     uintptr_t bounds[4];
     if (sysctlbyname("vm.malloc_ranges", text, &text_size, NULL, 0) || text_size >= sizeof(text)) {
-        tl_log_line("mm: VM range bounds unavailable errno=%d", errno);
+        if (!bounds_failure_logged) {
+            int saved_errno = errno;
+            /* XNU accepts an empty recipe list only when this process uses
+             * user ranges. This probes support without registering anything. */
+            kern_return_t probe = range_create(mach_task_self(), 1, NULL, 0);
+            tl_log_line("mm: VM range bounds unavailable errno=%d; empty range probe=%d", saved_errno, probe);
+            bounds_failure_logged = true;
+        }
         goto failed;
     }
     text[text_size] = 0;

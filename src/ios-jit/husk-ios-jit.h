@@ -92,6 +92,13 @@ HUSK_EXPORT bool husk_ios_jit_prewarm_self(size_t bytes);
  */
 HUSK_EXPORT bool husk_ios_jit_reserve_bottom(size_t end);
 
+/* Native-loader handoff, before publishing a mapping to any other consumer.
+ * The synchronous callback may create a smaller RW alias of the same RX prefix.
+ * It must not reenter any pool API. Old mappings are reclaimed only while
+ * unclaimed; otherwise the returned private alias coexists with them. */
+HUSK_EXPORT bool husk_ios_jit_open_native(HuskDualMapping *out,
+                                         void (*relocate)(HuskDualMapping *));
+
 /* Release a mapping obtained from husk_ios_jit_allocate(). */
 void husk_ios_jit_release(HuskDualMapping *m);
 

@@ -62,6 +62,9 @@ def validate(path,commit):
         assert b'aaudio: requested rate=' in app_code, 'Main executable lacks requested-rate audio fix'
         assert b'mm: recovered data mapping' in app_code, 'Main executable lacks writable data ENOMEM recovery'
         assert b'mm: guest heap placed outside host allocation ranges' in app_code, 'Main executable lacks proactive host address-space preservation'
+        assert b'husk_ios_jit_open_native' in app_code, 'Main executable lacks native JIT handoff'
+        qemu_code=z.read(root+'Frameworks/libqemu-aarch64-softmmu.dylib')
+        assert b'reclaimed obsolete JIT mappings:' in qemu_code, 'QEMU dylib lacks exclusive JIT alias reclamation'
         assert b'jni: host allocation failed bytes=' in app_code, 'Main executable lacks checked JNI allocation'
         assert b'egl: cleared prior compositor GL error' in app_code, 'Main executable lacks compositor error isolation'
         assert b'unity: emulated code stores=' in app_code, 'Main executable lacks store-emulation diagnostics'

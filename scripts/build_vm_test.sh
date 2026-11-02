@@ -45,6 +45,7 @@ sh tests/translation-layer/run_vm_data_macos.sh 2>&1 | tee build/evidence/vm-dat
 sh tests/translation-layer/run_audio_producers.sh 2>&1 | tee build/evidence/audio-producers.log
 sh tests/translation-layer/run_aaudio_contract.sh 2>&1 | tee build/evidence/aaudio-contract.log
 sh tests/translation-layer/run_jni_alloc.sh 2>&1 | tee build/evidence/jni-allocation.log
+sh tests/translation-layer/run_jit_pool_macos.sh 2>&1 | tee build/evidence/jit-pool.log
 sh tests/translation-layer/run_vm_gap_macos.sh 2>&1 | tee build/evidence/vm-gap-darwin.log
 sh tests/translation-layer/run_vm_aligned_macos.sh 2>&1 | tee build/evidence/vm-aligned-darwin.log
 sh tests/translation-layer/run_vm_range_macos.sh 2>&1 | tee build/evidence/vm-range-darwin.log
@@ -67,6 +68,18 @@ if [ ! -f "$OFFICIAL_IPA" ]; then
         https://github.com/Leviidev/Husk/releases/download/3.3/Husk.ipa -o "$OFFICIAL_IPA"
 fi
 python3 tools/stage_vm_test_dependencies.py "$OFFICIAL_IPA"
+# The JIT pool is compiled into QEMU, not the app. Reusing the release dylib
+# would silently omit this repair. Rebuild it and its pinned public dependencies;
+# the staged ANGLE/Java/PS4 resources remain the verified release versions.
+bash scripts/fetch_sources.sh
+bash scripts/build_ios.sh libffi glib pixman libucontext libslirp
+cp build/ios-arm64/cross-darwin.meson build/ios-arm64/cross-ios-darwin.meson
+PKG_CONFIG_LIBDIR="$ROOT/build/ios-arm64/sysroot/lib/pkgconfig:$ROOT/build/ios-arm64/sysroot/share/pkgconfig" \
+    bash scripts/build_gpu_ios.sh
+bash scripts/integrate_husk.sh
+bash scripts/build_ios.sh qemu
+nm -gU build/ios-arm64/lib/libqemu-aarch64-softmmu.dylib > build/evidence/qemu-exports.log
+grep -q ' _husk_ios_jit_open_native$' build/evidence/qemu-exports.log
 rustup target add aarch64-apple-ios
 bash scripts/build_rppairing_ios.sh
 

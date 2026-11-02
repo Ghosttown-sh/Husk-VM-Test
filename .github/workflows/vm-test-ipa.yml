@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
       - name: Install public build tools
         run: |
-          brew install xcodegen qemu
+          brew install xcodegen qemu meson ninja pkg-config autoconf automake libtool
       - name: Select signed Swift 6.4 compiler for the vendored StikJIT framework
         if: inputs.runner != 'xcode-27'
         run: bash scripts/install_vm_test_swift.sh
@@ -52,4 +52,5 @@ jobs:
           path: |
             build/evidence/
             build/derived-vm-test/build.log
+            build/logs/
           retention-days: 14

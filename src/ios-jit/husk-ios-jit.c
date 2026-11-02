@@ -459,8 +459,7 @@ static HuskDualMapping husk_self_dual_mapping(size_t bytes)
  */
 static HuskDualMapping husk_ios_jit_allocate_real(size_t bytes);
 
-static HuskDualMapping husk_prewarmed;
-static bool husk_prewarm_done;
+#include "husk-ios-jit-pool.inc"
 
 HUSK_EXPORT bool husk_ios_jit_prewarm(size_t bytes)
 {
@@ -489,34 +488,6 @@ HUSK_EXPORT bool husk_ios_jit_prewarm_self(size_t bytes)
     return true;
 }
 
-/* The held region, for the native runtime (translation-layer/husk-tl-load.c looks this up by name). */
-HUSK_EXPORT HuskDualMapping *husk_ios_jit_get_mapping(void)
-{
-    return husk_prewarmed.rw_addr ? &husk_prewarmed : NULL;
-}
-
-/*
- * One region, two users. The native runtime writes from the bottom of it and QEMU's TCG takes the top, so an Android app
- * started while Android itself runs (or Android started after one) does not write its code over the other's: that ended in
- * SIGILL inside cpu_tb_exec. Whichever comes second and does not fit gets a failure instead.
- */
-static pthread_mutex_t husk_share_lock = PTHREAD_MUTEX_INITIALIZER;
-static size_t husk_runtime_high;   /* bytes from the bottom the native runtime has taken */
-static size_t husk_qemu_top;       /* bytes at the top QEMU holds */
-
-HUSK_EXPORT bool husk_ios_jit_reserve_bottom(size_t end)
-{
-    pthread_mutex_lock(&husk_share_lock);
-    bool ok = end <= husk_prewarmed.size - husk_qemu_top;
-    if (ok && end > husk_runtime_high) husk_runtime_high = end;
-    pthread_mutex_unlock(&husk_share_lock);
-    if (!ok) {
-        fprintf(stderr, "[husk-jit] the native runtime wants %zu MiB of the JIT region, but QEMU holds its top %zu MiB\n",
-                end >> 20, husk_qemu_top >> 20);
-    }
-    return ok;
-}
-
 HuskDualMapping husk_ios_jit_allocate(size_t bytes)
 {
     /*
@@ -524,23 +495,8 @@ HuskDualMapping husk_ios_jit_allocate(size_t bytes)
      * exactly tb-size, which is what prewarm was given, so this is the normal
      * path -- the fallback below only runs if prewarm never happened.
      */
-    if (husk_prewarmed.rw_addr && husk_prewarmed.size >= bytes) {
-        size_t off = (husk_prewarmed.size - bytes) & ~(size_t)0x3FFF;
-        pthread_mutex_lock(&husk_share_lock);
-        bool fits = husk_runtime_high <= off;
-        if (fits) husk_qemu_top = husk_prewarmed.size - off;
-        pthread_mutex_unlock(&husk_share_lock);
-        if (!fits) {
-            fprintf(stderr, "[husk-jit] the native runtime already uses %zu MiB of the %zu MiB region; no room for %zu MiB of TCG\n",
-                    husk_runtime_high >> 20, husk_prewarmed.size >> 20, bytes >> 20);
-            HuskDualMapping none = { NULL, NULL, 0 };
-            return none;
-        }
-        fprintf(stderr, "[husk-jit] using the top %zu MiB of the prewarmed region (%zu MiB)\n",
-                (husk_prewarmed.size - off) >> 20, husk_prewarmed.size >> 20);
-        HuskDualMapping top = { husk_prewarmed.rw_addr + off, husk_prewarmed.rx_addr + off, husk_prewarmed.size - off };
-        return top;
-    }
+    HuskDualMapping top = husk_jit_take_top(bytes);
+    if (top.rw_addr) return top;
     /*
      * No second trap after a prewarm already went unanswered.
      * Inside qemu_init there is even less chance StikDebug is listening, and a
@@ -549,7 +505,7 @@ HuskDualMapping husk_ios_jit_allocate(size_t bytes)
      * fall back to MAP_JIT, or lets qemu_init report the error.
      */
     if (husk_prewarm_done) {
-        fprintf(stderr, "[husk-jit] prewarm failed earlier; not trapping again\n");
+        fprintf(stderr, "[husk-jit] prewarmed pool unavailable or too small; not trapping again\n");
         HuskDualMapping none = { NULL, NULL, 0 };
         return none;
     }
@@ -870,6 +826,8 @@ HuskDualMapping husk_ios_jit_allocate(size_t bytes)
 }
 bool husk_ios_jit_prewarm(size_t bytes) { (void)bytes; return false; }
 bool husk_ios_jit_prewarm_self(size_t bytes) { (void)bytes; return false; }
+bool husk_ios_jit_open_native(HuskDualMapping *out, void (*relocate)(HuskDualMapping *))
+{ (void)relocate; if (out) *out = (HuskDualMapping){0}; return false; }
 bool husk_ios_jit_reserve_bottom(size_t end) { (void)end; return true; }
 void husk_ios_jit_release(HuskDualMapping *m) { (void)m; }
 void husk_ios_jit_detach(void) {}
