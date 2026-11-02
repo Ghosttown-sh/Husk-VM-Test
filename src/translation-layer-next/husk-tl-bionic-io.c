@@ -1158,22 +1158,34 @@ static vm_address_t g_compressed_heap;
 static pthread_mutex_t g_compressed_heap_lock = PTHREAD_MUTEX_INITIALIZER;
 void husk_prepare_compressed_heap(void)
 {
+    vm_address_t reserved = 0;
     pthread_mutex_lock(&g_compressed_heap_lock);
     if (!g_compressed_heap) {
         vm_address_t address = 0;
         kern_return_t kr = vm_map(mach_task_self(), &address, PHANTOM_HALF,
             PHANTOM_HALF - 1, VM_FLAGS_ANYWHERE, MACH_PORT_NULL, 0, FALSE,
             VM_PROT_NONE, VM_PROT_ALL, VM_INHERIT_COPY);
-        if (kr == KERN_SUCCESS) g_compressed_heap = address;
+        if (kr == KERN_SUCCESS) reserved = g_compressed_heap = address;
     }
     pthread_mutex_unlock(&g_compressed_heap_lock);
+    if (reserved) tl_log_line("mm: holding unused 4 GiB compressed heap at %p for Dart/V8", (void *)reserved);
+}
+/* Only the unclaimed prewarm reservation belongs to Husk. phantom_reserve()
+ * transfers it under this same lock; a guest-owned cage must never be freed. */
+static bool release_unused_compressed_heap(void)
+{
+    bool released = false;
+    pthread_mutex_lock(&g_compressed_heap_lock);
+    if (g_compressed_heap && vm_deallocate(mach_task_self(), g_compressed_heap, PHANTOM_HALF) == KERN_SUCCESS) {
+        g_compressed_heap = 0;
+        released = true;
+    }
+    pthread_mutex_unlock(&g_compressed_heap_lock);
+    return released;
 }
 void husk_release_unused_compressed_heap(void)
 {
-    pthread_mutex_lock(&g_compressed_heap_lock);
-    if (g_compressed_heap && vm_deallocate(mach_task_self(), g_compressed_heap, PHANTOM_HALF) == KERN_SUCCESS)
-        g_compressed_heap = 0;
-    pthread_mutex_unlock(&g_compressed_heap_lock);
+    (void)release_unused_compressed_heap();
 }
 static bool compressed_heap_request(size_t len)
 {
@@ -1351,6 +1363,21 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
     void *r = refuse || (force_phantom && compressed_heap_request(len) && prot == 0 && (flags & 0x20) && !(flags & 0x10)) ? MAP_FAILED
             : shifted ? shifted_file_map(addr, len, prot_filter(prot, "mmap"), df, fd, off)
             : mmap(addr, len, prot_filter(prot, "mmap"), df, (flags & 0x20) ? -1 : fd, off);
+    /* JIT prewarming keeps a speculative 4 GiB cage for Dart/V8. Unity does
+     * not consume it, and its aligned heap reservation can then run out of
+     * virtual address space. Give back only that unused cage and retry the
+     * identical request once. Never substitute a smaller or fictitious mapping,
+     * discard a guest-owned cage, or defeat deliberate test/loader refusals. */
+    if (r == MAP_FAILED && errno == ENOMEM && !refuse && prot == PROT_NONE
+        && (flags & 0x23) == 0x22 && !(flags & 0x10) && !compressed_heap_request(len)
+        && release_unused_compressed_heap()) {
+        errno = 0;
+        r = mmap(addr, len, prot, df, -1, off);
+        int retry_errno = errno;
+        tl_log_line("mm: released unused 4 GiB compressed heap; retry addr=%p len=%#zx -> %p errno=%d",
+                    addr, len, r, r == MAP_FAILED ? retry_errno : 0);
+        errno = retry_errno;
+    }
     if (r == MAP_FAILED && (errno == ENOMEM || force_phantom) && prot == 0 && (flags & 0x20) && !(flags & 0x10)) { r = phantom_reserve(len); if (r != MAP_FAILED) errno = 0; }
     TL_ERRNO_END();
     /* a file mapped executable (libffi's trampolines: its own library's code page, or a temporary file holding a copy): a phone
@@ -1362,8 +1389,11 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
         tl_set_guest_errno(13); r = MAP_FAILED;
     }
     if (r != MAP_FAILED && (flags & 0x20)) anon_add(r, len);
+    int map_errno = errno;
     mm_trace("mmap", r, len, prot, flags);
-    if (r == MAP_FAILED) tl_log_line("mm: mmap FAILED len=%#zx prot=%d flags=%#x errno=%d", len, prot, flags, errno);
+    if (r == MAP_FAILED) tl_log_line("mm: mmap FAILED len=%#zx prot=%d flags=%#x errno=%d addr=%p off=%#lx host_page=%d",
+                                    len, prot, flags, map_errno, addr, off, getpagesize());
+    errno = map_errno;
     return r;
 }
 static int b_munmap(void *a, size_t l)
