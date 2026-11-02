@@ -7,5 +7,5 @@ trap 'rm -rf "$OUT"' EXIT
 python3 "$ROOT/tests/translation-layer/extract_vm_native.py" "$OUT/production_vm.inc"
 clang -dynamiclib "$ROOT/tests/translation-layer/vm_pressure_window.c" -o "$OUT/window.dylib"
 clang -O1 -ffunction-sections -fdata-sections -I"$OUT" -I"$ROOT/src/translation-layer-next" -I"$ROOT/src/translation-layer" \
-  "$ROOT/tests/translation-layer/vm_pressure_macos.c" -Wl,-dead_strip -Wl,-undefined,dynamic_lookup -o "$OUT/test"
+  "$ROOT/tests/translation-layer/vm_pressure_macos.c" "$ROOT/src/translation-layer-next/husk-tl-vm.c" -Wl,-dead_strip -Wl,-undefined,dynamic_lookup -o "$OUT/test"
 DYLD_INSERT_LIBRARIES="$OUT/window.dylib" "$OUT/test"

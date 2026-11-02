@@ -46,7 +46,7 @@ final class CrashReport: ObservableObject {
             case .startFailed:
                 return "The runtime could not start it. The report says which part was missing."
             case .unknown:
-                return "Nothing was recorded, which usually means iOS ended Husk for using too much memory, or Husk was closed from the app switcher."
+                return "No termination reason was recorded. This alone does not establish a memory-pressure kill. The full run log and any matching iPadOS JetsamEvent or crash report are needed to identify the cause."
             case .diagnosed(let d):
                 return d.detail
             }

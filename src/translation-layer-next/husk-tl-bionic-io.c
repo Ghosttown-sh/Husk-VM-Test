@@ -16,6 +16,7 @@ bool tl_ld_covers(const void *addr, size_t bytes);
 #include "husk-tl-codewrite.h"
 #include "husk-tl-xmem.h"
 #include "husk-tl-binder.h"
+#include "husk-tl-vm.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -1079,10 +1080,10 @@ static void anon_add(void *addr, size_t len)
 }
 
 /* Mimalloc reserves a large anonymous range and munmaps the unused ends to align. Keep the list matching that. */
-static void anon_remove(uintptr_t addr, size_t len)
+/* Caller holds g_anon_lock across the host unmap and this bookkeeping. */
+static void anon_remove_locked(uintptr_t addr, size_t len)
 {
     uintptr_t end = addr + len;
-    pthread_mutex_lock(&g_anon_lock);
     for (int i = 0; i < g_nanon; i++) {
         uintptr_t a = g_anon[i].addr, e = a + g_anon[i].len;
         if (end <= a || addr >= e) continue;
@@ -1097,7 +1098,6 @@ static void anon_remove(uintptr_t addr, size_t len)
             g_anon[i] = g_anon[--g_nanon]; i--;
         }
     }
-    pthread_mutex_unlock(&g_anon_lock);
 }
 
 static void anon_zap(uintptr_t addr, size_t len)
@@ -1378,6 +1378,17 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
                     addr, len, r, r == MAP_FAILED ? retry_errno : 0);
         errno = retry_errno;
     }
+    /* A non-fixed Linux reservation may use any free part of the task map.
+     * Darwin mmap's heap-range search can fail even after the unused cage was
+     * returned. Reserve a real gap with Mach's atomic no-overwrite operation.
+     * Keep all fixed, shared, file, executable and unsupported-flag requests
+     * on their existing paths. MAP_NORESERVE is a Linux accounting hint. */
+    if (r == MAP_FAILED && errno == ENOMEM && !refuse && prot == PROT_NONE
+        && (flags & ~0x4000) == 0x22 && !compressed_heap_request(len)) {
+        tl_vm_log_state("reservation-ENOMEM");
+        r = tl_vm_reserve_gap(len);
+        if (r != MAP_FAILED) errno = 0;
+    }
     if (r == MAP_FAILED && (errno == ENOMEM || force_phantom) && prot == 0 && (flags & 0x20) && !(flags & 0x10)) { r = phantom_reserve(len); if (r != MAP_FAILED) errno = 0; }
     TL_ERRNO_END();
     /* a file mapped executable (libffi's trampolines: its own library's code page, or a temporary file holding a copy): a phone
@@ -1390,9 +1401,12 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
     }
     if (r != MAP_FAILED && (flags & 0x20)) anon_add(r, len);
     int map_errno = errno;
+    if (r != MAP_FAILED && len >= (64u << 20) && prot == PROT_NONE)
+        tl_log_line("mm: reservation addr=%p len=%#zx flags=%#x", r, len, flags);
     mm_trace("mmap", r, len, prot, flags);
-    if (r == MAP_FAILED) tl_log_line("mm: mmap FAILED len=%#zx prot=%d flags=%#x errno=%d addr=%p off=%#lx host_page=%d",
+    if (r == MAP_FAILED) { tl_vm_log_state("mmap-failed"); tl_log_line("mm: mmap FAILED len=%#zx prot=%d flags=%#x errno=%d addr=%p off=%#lx host_page=%d",
                                     len, prot, flags, map_errno, addr, off, getpagesize());
+    }
     errno = map_errno;
     return r;
 }
@@ -1407,10 +1421,15 @@ static int b_munmap(void *a, size_t l)
         return 0;
     }
     { int sr; if (shifted_unmap(a, &sr)) { mm_trace("munmap", a, l, sr, errno); return sr; } }
+    if (!l || ((uintptr_t)a & (getpagesize() - 1))) { tl_set_guest_errno(22); return -1; }
     size_t real = phantom_clamp((uintptr_t)a, l);
     if (real == 0) return 0;                                 /* the half of a phantom range that was never mapped */
-    anon_remove((uintptr_t)a, real);
-    TL_ERRNO_BEGIN(); int r = munmap(a, real); TL_ERRNO_END(); mm_trace("munmap", a, real, r, errno); return r;
+    pthread_mutex_lock(&g_anon_lock);
+    TL_ERRNO_BEGIN(); int r = munmap(a, real); TL_ERRNO_END();
+    if (r == 0) anon_remove_locked((uintptr_t)a, real);
+    pthread_mutex_unlock(&g_anon_lock);
+    if (real >= (64u << 20) || r) tl_log_line("mm: unmap addr=%p len=%#zx result=%d errno=%d", a, real, r, r ? errno : 0);
+    mm_trace("munmap", a, real, r, errno); return r;
 }
 /* Whether a range is inside memory the guest mapped for itself (not a library's own pages). */
 static bool anon_contains(uintptr_t addr, size_t len)
@@ -1476,7 +1495,9 @@ static int b_mprotect(void *a, size_t l, int prot)
         mm_trace("mprotect", a, l, prot, 0);
         return 0;
     }
-    TL_ERRNO_BEGIN(); int r = mprotect(a, l, prot_filter(prot, "mprotect")); int e = errno; TL_ERRNO_END(); mm_trace("mprotect", a, l, prot, r ? e : 0); return r; }
+    TL_ERRNO_BEGIN(); int r = mprotect(a, l, prot_filter(prot, "mprotect")); int e = errno; TL_ERRNO_END();
+    if (r) { tl_log_line("mm: mprotect FAILED addr=%p len=%#zx prot=%d errno=%d", a, l, prot, e); tl_vm_log_state("mprotect-failed"); }
+    mm_trace("mprotect", a, l, prot, r ? e : 0); return r; }
 static int b_madvise(void *a, size_t l, int adv)
 {
     mm_trace("madvise", a, l, adv, 0);
@@ -1804,6 +1825,8 @@ static long linux_syscall_impl(long a0, long a1, long a2, long a3, long a4, long
     case 169: return b_gettimeofday((int64_t *)a0, (void *)a1);
     case 93: case 94: tl_log_line("bionic: exit(%ld) by raw system call", a0); exit((int)a0);
     case 278: arc4random_buf((void *)a0, (size_t)a1); return a1;                        /* getrandom */
+    case 270: return tl_vm_process_readv((pid_t)a0, (const struct iovec *)a1, (unsigned long)a2,
+                                       (const struct iovec *)a3, (unsigned long)a4, (unsigned long)a5);
     case 283: return 0;                                                                 /* membarrier */
     case 134: case 135: return 0;                                                       /* rt_sigaction, rt_sigprocmask: accepted */
     case 233: return 0;                                                                 /* madvise */

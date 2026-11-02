@@ -172,6 +172,7 @@ static void *heartbeat_thread(void *arg)
         unsigned long f = engine_frames();
 #if TARGET_OS_IPHONE
         tl_log_line("unity: alive: %lu frames (+%lu), %zu MiB left before jetsam", f, f - last, os_proc_available_memory() >> 20);
+        { extern void tl_vm_log_state(const char *); tl_vm_log_state("unity-heartbeat"); }
 #else
         tl_log_line("unity: alive: %lu frames (+%lu)", f, f - last);
 #endif

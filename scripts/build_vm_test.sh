@@ -41,6 +41,7 @@ cd "$ROOT"
 mkdir -p build/evidence "$DD" "$(dirname "$OUT")"
 python3 tests/translation-layer/run_vm_pressure.py --cc clang 2>&1 | tee build/evidence/vm-policy.log
 sh tests/translation-layer/run_vm_pressure_macos.sh 2>&1 | tee build/evidence/vm-darwin.log
+sh tests/translation-layer/run_vm_gap_macos.sh 2>&1 | tee build/evidence/vm-gap-darwin.log
 sh tests/translation-layer/run_compressed_heap.sh 2>&1 | tee build/evidence/compressed-heap.log
 sh tests/translation-layer/run_guest_ram_plan.sh 2>&1 | tee build/evidence/qemu-ram.log
 sh tests/translation-layer/run_apk_path.sh 2>&1 | tee build/evidence/apk-path.log

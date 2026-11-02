@@ -334,3 +334,102 @@ run it. No Java framework changes or game modifications are needed.
    throwaway chart, save it, close/reopen the editor, and verify persistence.
    Record each result separately. Only then can the end-to-end goal be
    marked achieved.
+
+## Follow-up after 90b1e42: repeated reservations and termination evidence
+
+The user now confirms 90b1e42 passed metadata loading and reached ANGLE,
+SwappyWrapper and AAudio. Preserve both earlier fixes. The new supplied log
+excerpt reports another `0x1fffc000` reservation failure, syscall 270 ENOSYS,
+and a Unity Serialization allocation failure for 25,348,708 bytes. The
+screenshot separately ends after four frames with 4,013 MiB available. These
+may be different launches. No matching JetsamEvent or complete new native
+report has been supplied; neither excerpt establishes a Jetsam kill.
+
+### Repeated reservation mechanism
+
+Apple's public `bsd/kern/kern_mman.c` explicitly forces untagged anonymous
+mmap into `UMEM_RANGE_ID_HEAP` when map ranges are enabled. The VM range
+selection in `osfmk/vm/vm_map.c` then limits an anywhere search to that range.
+This is narrower than Linux's non-fixed anonymous reservation semantics.
+Once the unused cage is gone, a later heap-range ENOMEM cannot be recovered
+by releasing it again. The physical run proves the first reclamation helped;
+it does not expose the device's entire map or prove which holes remain at the
+second failure. The new fallback addresses that source-level incompatibility,
+with on-device gap/footprint diagnostics to confirm or reject it for this run.
+
+`tl_vm_reserve_gap` walks the actual task map within TASK_VM_INFO's min/max
+bounds, including existing inaccessible reservations and submaps. Only after
+an ordinary private anonymous PROT_NONE request fails with ENOMEM, it asks
+Mach to reserve an entire suitable gap using VM_FLAGS_FIXED **without**
+VM_FLAGS_OVERWRITE. The kernel atomically refuses collisions and applies its
+usual address and protection checks. A competing allocation triggers a new
+query; mapped bytes are never treated as free. There are no hard-coded device
+addresses, larger process limits, smaller/fictitious reservations, or eager
+page writes. No-fit returns ENOMEM. All Mach object ports returned by map
+queries are released. Fixed/shared/file/executable mappings and the existing
+Dart/V8 cage protocol retain their prior paths.
+
+The result still has real PROT_NONE pages, VM_PROT_ALL maximum protection,
+copy inheritance, normal mprotect/munmap and zero-fill behavior. The native
+regression uses the production mmap/trim/protect code and real Mach mappings
+in a constrained test window. It checks five successive Unity-size requests,
+256 MiB alignment trimming, reuse after release, concurrent collision refusal,
+real zero-fill/commit, small physical footprint, and honest exhaustion.
+Anonymous ownership records are now changed only after a successful host
+munmap, under the ownership lock; invalid unmaps cannot lose live records.
+
+JIT RX, the original shared RW alias, and the nearer loader RW alias remain
+owned by the JIT/QEMU and loader subsystems. The old RW alias cannot safely be
+deleted merely because the loader prefers another: QEMU's prewarmed mapping
+still points to it. Their virtual cost is distinct from physical page cost.
+The fallback neither overwrites nor frees them. The guest's anonymous ranges
+remain independently releasable rather than using a growing arena.
+
+### ARM64 syscall 270 is process_vm_readv
+
+The Android/Linux asm-generic syscall table defines 270 as process_vm_readv:
+https://android.googlesource.com/platform/bionic/+/refs/heads/main/libc/kernel/uapi/asm-generic/unistd.h
+
+The supplied libunity.so calls it at 0xa6b268, within the memory reader at
+0xa6b1a0. Its embedded source path is
+`PlatformDependent/AndroidPlayer/External/aosp/libunwindstack/Memory.cpp`.
+It checks errno==38 (ENOSYS), then for its own PID substitutes memcpy at
+0xa6b2a8. That fallback can fault while inspecting an unreadable address,
+including while constructing an OOM/crash report. This is a diagnostic reader,
+not the allocator issuing the 512 MiB reservation.
+
+`unity_process_vm.py` executes this unmodified ARM64 routine locally from the
+hash-verified user APK. ENOSYS + readable memory copies successfully; ENOSYS +
+unmapped memory faults in the memcpy fallback; EFAULT + unmapped memory
+returns zero bytes without executing memcpy. No game code/bytes are changed
+or published. This proves the fallback hazard, not that this particular
+unrecorded physical termination followed it.
+
+The shim now implements self-process scatter/gather reads through Mach
+vm_read_overwrite, validates vector counts/lengths/flags and descriptors,
+returns actual bytes transferred, EFAULT for inaccessible memory, and partial
+counts for a later unreadable page. Cross-process access is denied (or ESRCH
+for nonexistent PIDs); no other task port or private permission is acquired.
+No error is replaced with fake success. Native tests cover real copies,
+invalid source/destination/descriptors, partial transfer and argument errors.
+
+The inspected Unity and IL2CPP ELF imports have mmap/munmap but no mremap
+import. Husk's existing mremap has incomplete Linux flag/protection semantics;
+there is no supplied evidence it is on this failure path, so this change does
+not redesign it or attribute the observed failure to it. General mremap and
+other unrelated compatibility limitations remain follow-up work if reached.
+
+### What the next physical run can establish
+
+New logs include large reservations/unmaps, failed mprotect, Mach gap failure
+codes and bounds, and TASK_VM_INFO footprint/resident/virtual bytes alongside
+os_proc_available_memory on every startup heartbeat and mapping failure.
+The generic crash dialog and low-memory diagnosis no longer assert Jetsam
+from a missing report or one low available-memory estimate. A matching iPadOS
+JetsamEvent is still needed to confirm an actual process-memory kill.
+
+Automated results before cloud testing: Windows production cage-policy tests
+PASS; the original pre-fix source still reproduces the intended failing
+baseline; the local original-ARM64 syscall reader tests PASS. Native Darwin
+regressions and the new IPA build are pending at this checkpoint. Complete
+editor launch, touch input, chart loading/editing/saving remain unverified.

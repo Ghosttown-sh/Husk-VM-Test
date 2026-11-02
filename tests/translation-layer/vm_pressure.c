@@ -105,6 +105,10 @@ static int prot_filter(int p,const char *what) { return p & ~PROT_EXEC; }
 static void anon_add(void *p,size_t n) {}
 static void mm_trace(const char *what,void *a,size_t n,long x,long y) {}
 
+/* This bounded policy model isolates cage ownership. Real task-map gap
+ * search and process_vm_readv are covered by vm_gap_macos.c. */
+static void *tl_vm_reserve_gap(size_t size) { (void)size; errno = ENOMEM; return MAP_FAILED; }
+static void tl_vm_log_state(const char *reason) { (void)reason; }
 #include "production_mm.inc"
 
 static void reset(bool prewarm) {
