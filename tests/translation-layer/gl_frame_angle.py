@@ -167,6 +167,23 @@ def main():
         read(0,0,1,1,0x1908,0x1401,pixel)
         assert list(pixel)==[255*(index%2),255*(1-index%2),0,255],(index,list(pixel))
     print('PASS: 30 queued reuse cycles without per-frame CPU reads; every GPU snapshot retains its original color')
+    # A uniform color cannot detect image inversion. Verify asymmetric corners
+    # through the same producer copy and consumer shader, before UI transforms.
+    assert current(display,surface,surface,producer)
+    bindfb(0x8d40,0);color(1,0,0,1);clear(0x4000)
+    fn('glEnable',None,U)(0x0c11)
+    fn('glScissor',None,I,I,I,I)(0,0,width//2,height//2)
+    color(0,0,1,1);clear(0x4000)
+    fn('glDisable',None,U)(0x0c11)
+    assert bridge.tl_gl_frame_publish(frame,surface,width,height)
+    assert current(display,ui,ui,consumer)
+    assert bridge.tl_gl_frame_acquire(frame,C.byref(tex));consume(tex)
+    for x,y,expected in ((4,4,[0,0,255,255]),(27,4,[255,0,0,255]),
+                         (4,27,[255,0,0,255]),(27,27,[255,0,0,255])):
+        read(x,y,1,1,0x1908,0x1401,pixel)
+        assert list(pixel)==expected,(x,y,list(pixel))
+    bridge.tl_gl_frame_release(frame)
+    print('PASS: asymmetric image corners retain orientation and alpha through compositor sampling')
     assert current(display,surface,surface,producer)
     bridge.tl_gl_frame_reset(frame)
     assert current(display,ui,ui,consumer)

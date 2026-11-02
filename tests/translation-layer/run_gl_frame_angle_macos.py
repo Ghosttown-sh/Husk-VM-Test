@@ -44,7 +44,7 @@ subprocess.run(['clang', '-dynamiclib', str(out / 'frame.o'), str(out / 'metal.o
 for samples in ('0', '4'):
     command = [sys.executable, '-u', str(root / 'tests/translation-layer/gl_frame_angle.py'),
                str(out), str(bridge), '--backend', 'metal', '--samples', samples]
-    result = subprocess.run(command)
+    result = subprocess.run(command, timeout=180)
     if result.returncode < 0:
         subprocess.run(['lldb','--batch','-o','settings set target.process.stop-on-exec false',
                         '-o','run','-o','thread backtrace all','--',*command], timeout=60)
