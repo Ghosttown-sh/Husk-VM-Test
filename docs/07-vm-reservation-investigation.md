@@ -283,7 +283,11 @@ The APK's actual Unity ARM64 parser at 0x6e2d38 uses a table containing
 caller at 0x6e4418 depends on successful splitting of archive and entry paths.
 `tests/translation-layer/unity_apk_path.py` executes those unchanged original
 instructions under Unicorn: the imported `.aPK/assets/...` fails; `.apk/assets/...`
-and `.husk-package/base.apk/assets/...` both split correctly. Spaces alone
+and `.husk-package/base.apk/assets/...` both split correctly. The real caller
+at 0x6e4418 was also executed with an available registered archive: `.aPK`
+returns NULL before querying the entry, whereas base.apk queries the correct
+entry and returns the archive. Allocation/string ownership and the registered
+archive/entry lookup are harness callbacks, not a full Unity runtime. Spaces alone
 do not fail. This confirms a compatibility defect matching the resource
 failure, but the full resource initialization path must still be retested
 on the iPad; the routine test is not full Unity execution.
