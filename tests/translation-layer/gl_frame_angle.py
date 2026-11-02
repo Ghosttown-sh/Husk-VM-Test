@@ -6,11 +6,13 @@ No APK, browser profile or iPad access. Hardware/backend is reported explicitly.
 """
 import argparse
 import ctypes as C
+import faulthandler
 import os
 from pathlib import Path
 import time
 
 def main():
+    faulthandler.enable()
     p=argparse.ArgumentParser();p.add_argument('angle',type=Path);p.add_argument('bridge',type=Path)
     p.add_argument('--backend',choices=('d3d11','opengl','metal'),default='d3d11' if os.name=='nt' else 'metal')
     p.add_argument('--samples',type=int,default=0)
@@ -88,12 +90,14 @@ def main():
         # Guest GL error must survive the bridge's internal checks.
         bind(0xdead,0)
         start=time.perf_counter()
+        if index == 0: print('First producer publish',flush=True)
         assert bridge.tl_gl_frame_publish(frame,surface,width,height),('publish',hex(error()))
         assert bridge.tl_gl_frame_take_guest_error(frame)==0x500
         value=I();get(0x8069,C.byref(value));assert value.value==guest.value
         get(0x8caa,C.byref(value));assert value.value==dummy.value
         assert error()==0
         assert current(display,ui,ui,consumer)
+        if index == 0: print('First consumer acquire',flush=True)
         assert bridge.tl_gl_frame_acquire(frame,C.byref(tex)),('acquire',hex(error()))
         bindfb(0x8d40,target);attach(0x8d40,0x8ce0,0xde1,tex,0)
         assert status(0x8d40)==0x8cd5

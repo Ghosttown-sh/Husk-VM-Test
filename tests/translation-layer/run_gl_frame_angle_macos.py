@@ -42,5 +42,9 @@ for source, flags, obj in (
 subprocess.run(['clang', '-dynamiclib', str(out / 'frame.o'), str(out / 'metal.o'),
                 '-framework', 'Metal', '-framework', 'Foundation', '-o', str(bridge)], check=True)
 for samples in ('0', '4'):
-    subprocess.run([sys.executable, str(root / 'tests/translation-layer/gl_frame_angle.py'),
-                    str(out), str(bridge), '--backend', 'metal', '--samples', samples], check=True)
+    command = [sys.executable, '-u', str(root / 'tests/translation-layer/gl_frame_angle.py'),
+               str(out), str(bridge), '--backend', 'metal', '--samples', samples]
+    result = subprocess.run(command)
+    if result.returncode < 0:
+        subprocess.run(['lldb','--batch','-o','run','-o','thread backtrace all','--',*command], timeout=60)
+    result.check_returncode()
