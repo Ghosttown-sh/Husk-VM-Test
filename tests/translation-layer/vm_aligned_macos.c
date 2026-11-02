@@ -8,7 +8,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <unistd.h>
-#define START 0x7200000000ULL
+static vm_address_t window_start;
+#define START window_start
 #define CHUNK 0x10000000ULL
 #define SLOTS 12
 #define END (START + SLOTS * CHUNK)
@@ -71,11 +72,16 @@ int main(int argc, char **argv) {
     printf("Aligned VM host page size: %zu; pointer size: %zu\n",page,sizeof(void *));
     original=fallback;
     /* Six independent 256 MiB holes, separated by existing JIT-like mappings.
-     * The final occupied entry also proves that the walk stays within bounds. */
+     * Obtain the whole aligned window from the actual kernel first: a fixed
+     * address is not admitted on every host. Punch only holes we own. The final
+     * occupied entry also proves that the walk stays within bounds. */
+    assert(vm_map(mach_task_self(),&window_start,SLOTS*CHUNK,CHUNK-1,
+        VM_FLAGS_ANYWHERE,MACH_PORT_NULL,0,FALSE,VM_PROT_NONE,
+        VM_PROT_ALL,VM_INHERIT_COPY)==KERN_SUCCESS);
+    for(unsigned i=0;i<SLOTS;i+=2)
+        assert(munmap((void *)(START+i*CHUNK),CHUNK)==0);
     for(unsigned i=1;i<=SLOTS;i+=2) {
         vm_address_t a=START+i*CHUNK;
-        assert(vm_map(mach_task_self(),&a,CHUNK,0,VM_FLAGS_FIXED,MACH_PORT_NULL,0,FALSE,
-            VM_PROT_NONE,VM_PROT_ALL,VM_INHERIT_COPY)==KERN_SUCCESS);
         assert(mprotect((void *)a,page,PROT_READ|PROT_WRITE)==0);
         *(volatile uint32_t *)a=0x42420000+i;
     }
