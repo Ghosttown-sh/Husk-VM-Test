@@ -10,7 +10,17 @@ the exact 0x1fffc000 retry returned 0x7000000000 with errno=0. Unity reached
 five graphics swaps, then crashed during resource/IL2CPP initialization.
 Complete Unity startup and physical iPad editor/touch/save remain unverified.
 
-Successful build: [Actions run 41507991694](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41507991694).
+Current follow-up IPA: [Actions run 41514373867](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41514373867),
+source `90b1e42068da4289f968d10457c1a0a8b2b4c542`, build stamp
+`90b1e42-dirty`, 142,245,606 bytes. SHA256:
+`1524621f2e9a0df785b9dca2f7b40d09c98d5a24b292baf2b71e51fe78395689`.
+The source fix, native filesystem tests, 16 KiB Darwin memory tests, full
+ARM64 iOS compilation and signature validation passed on Apple Silicon.
+Windows independently validated all nine device binaries, identity, resources,
+ZIP CRC and the new code diagnostic. Linux filesystem and memory tests passed
+in run 41514378587. This follow-up IPA has not yet run on the physical iPad.
+
+Earlier memory-fix build: [Actions run 41507991694](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41507991694).
 The source revision is `10a4cd0e44a538958591d827217877d5e4df874e`; the IPA's
 build stamp is `10a4cd0-dirty` (the build regenerates tracked Xcode project
 and dependency-notice files). Later documentation commits do not change this
@@ -178,7 +188,12 @@ No Android snapshot download is required for this work.
 | Patched app and both extensions compiled | Passed, Xcode 27.1 / Swift 6.4 / ARM64 iOS device, run 41507991694 |
 | IPA ZIP/resources/identity/platform/patched-code validation | Passed on Mac and independently on Windows; 9 ARM64 device Mach-O binaries checked |
 | IPA code signatures | Passed `codesign --verify --deep --strict` on Mac; ad-hoc signatures still need installer re-signing |
-| Full Unity startup, editor UI, touch, edit/save/reopen on iPad | Not run |
+| Exact 0x1fffc000 reservation recovery on the physical iPad | Passed in user's 10a4cd0-dirty launch log |
+| Full Unity startup on first test IPA | Failed later during resource/IL2CPP initialization, fault 0x135 |
+| Original Unity archive parser and actual lookup caller, Unicorn | Reproduced .aPK failure; standard base.apk succeeds |
+| Installed APK filesystem regression | Passed on Linux (41514378587) and Apple Silicon macOS (41514373867) |
+| Follow-up IPA compiled, signature-verified and structurally validated | Passed, run 41514373867; Windows independent validation passed |
+| Follow-up IPA physical launch; editor UI, touch, edit/save/reopen | Not yet tested |
 
 The remote Swift test sent only `GuestRAMPlan.swift` and its test source to
 Compiler Explorer's documented compile/execute API. Its compiler exit code and
@@ -308,7 +323,7 @@ run it. No Java framework changes or game modifications are needed.
 
 ## Remaining actions, in order
 
-1. Build and validate the follow-up IPA; update the existing **Husk VM Test**
+1. Update the existing **Husk VM Test** with the validated follow-up IPA
    through Sideloadly with the same signing account and identifier. Preserve
    its installed data and pairing; do not uninstall either Husk app.
 2. Launch the already-imported original APK through Translation Layer / java
