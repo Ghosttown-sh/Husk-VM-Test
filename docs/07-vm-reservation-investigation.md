@@ -1,24 +1,29 @@
 # Visual Maimai Mobile: VM investigation and test build
 
-Status on 2026-11-02: source fixes implemented; Windows, Linux CI and native
-macOS regression tests passed, including real Darwin mappings with both 4 KiB
-and 16 KiB host pages. A real ARM64 iOS device IPA was built successfully on
-Apple Silicon with Xcode 27.1, structurally validated and signature-verified
-on the Mac, then downloaded and independently revalidated on Windows.
-The user's 19:44:49Z physical iPad run confirms that the memory fix succeeded:
-the exact 0x1fffc000 retry returned 0x7000000000 with errno=0. Unity reached
-five graphics swaps, then crashed during resource/IL2CPP initialization.
-Complete Unity startup and physical iPad editor/touch/save remain unverified.
+Status on 2026-11-02: the user's physical runs confirm the first memory
+recovery and subsequent APK pathname/metadata fix. Build 90b1e42 progresses
+through Unity, metadata, ANGLE, SwappyWrapper and AAudio, then a later
+reservation/startup failure remains. The exact cause of the separate silent
+termination is unconfirmed: no matching JetsamEvent is available.
 
-Current follow-up IPA: [Actions run 41514373867](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41514373867),
+Current follow-up IPA: [Actions run 41517898221](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41517898221),
+source `b4509b776535ba6841b5794f76bf7e893a532586`, build stamp
+`b4509b7-dirty`, 142,245,723 bytes. SHA256:
+`6f8f21a0f15e684d6cb891df1f609d5fe31bc2638aa556f9ed367152f9c6081c`.
+The real-gap reservation fallback, safe self process_vm_readv, earlier memory
+and asset-path tests, QEMU RAM policy, full ARM64 iOS compilation, and strict
+signature validation all passed on the Apple Silicon Xcode 27.1 runner.
+The native tests explicitly reported 16,384-byte host pages. Windows then
+independently validated all nine ARM64 iOS binaries, test identity, resources,
+ZIP CRC, source stamp and new code diagnostics. This IPA has not yet run on
+the physical iPad. Editor UI/touch/chart editing/save/reopen remain unverified.
+
+Previous metadata-fix IPA: [Actions run 41514373867](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41514373867),
 source `90b1e42068da4289f968d10457c1a0a8b2b4c542`, build stamp
 `90b1e42-dirty`, 142,245,606 bytes. SHA256:
 `1524621f2e9a0df785b9dca2f7b40d09c98d5a24b292baf2b71e51fe78395689`.
-The source fix, native filesystem tests, 16 KiB Darwin memory tests, full
-ARM64 iOS compilation and signature validation passed on Apple Silicon.
-Windows independently validated all nine device binaries, identity, resources,
-ZIP CRC and the new code diagnostic. Linux filesystem and memory tests passed
-in run 41514378587. This follow-up IPA has not yet run on the physical iPad.
+The user now confirms this build passed the former resource/metadata failure;
+the repeated reservation and unknown-termination evidence is detailed below.
 
 Earlier memory-fix build: [Actions run 41507991694](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41507991694).
 The source revision is `10a4cd0e44a538958591d827217877d5e4df874e`; the IPA's
@@ -431,5 +436,25 @@ JetsamEvent is still needed to confirm an actual process-memory kill.
 Automated results before cloud testing: Windows production cage-policy tests
 PASS; the original pre-fix source still reproduces the intended failing
 baseline; the local original-ARM64 syscall reader tests PASS. Native Darwin
-regressions and the new IPA build are pending at this checkpoint. Complete
-editor launch, touch input, chart loading/editing/saving remain unverified.
+regressions and the new IPA build subsequently passed in run 41517898221.
+The gap test performed five real 0x1fffc000 reservations after injected
+heap-mmap ENOMEM, each trimmed to a live 256 MiB arena, with approximately
+1 MiB reported physical footprint. It preserved a racing mapping, reused a
+freed hole, and returned ENOMEM when the entire test range was occupied.
+The self-read tests verified real data and errors against Mach on 16 KiB
+pages. The Mac log's `available=0` is a platform placeholder, not a measured
+Mac memory budget; os_proc_available_memory is queried only on iOS.
+
+A scan of direct syscall PLT call sites in this exact Unity/IL2CPP pair found
+futex (98), affinity (122/123), gettid (178), and process_vm_readv (270), but
+no direct mremap syscall (216). This further narrows the observed path; it
+cannot exclude future indirect/native-plugin calls.
+
+The updated IPA was downloaded and independently validated on Windows and
+handed to Sideloadly by its normal file argument. No Apple device was
+connected during the final check, so installation and physical execution
+cannot be confirmed. Use the same signing account and existing Husk VM Test
+identifier to update in place. Do not uninstall the app or clear its data.
+Complete editor launch, touch input, chart loading/editing/saving and reopening
+still require the user's physical test. If startup fails, retain the full new
+run report and a matching-time iPadOS JetsamEvent/crash report when available.
