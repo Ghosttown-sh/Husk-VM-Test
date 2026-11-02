@@ -27,6 +27,7 @@
 
 #include "husk-tl-bionic.h"
 #include "husk-tl-egl.h"
+#include "husk-tl-gl-frame.h"
 #include "husk-tl-internal.h"
 #include "husk-tl-ld.h"
 
@@ -679,6 +680,8 @@ static struct {
     EGLDisplay dpy; EGLConfig cfg; EGLContext ui; bool es3, ready;
     /* the frame to show: a shared texture, or pixels (bottom row first) */
     uint32_t tex; uint8_t *px; int pw, ph; int x, y, w, h; uint64_t seq; bool on;
+    tl_gl_frame *gpu; bool gpu_on, gpu_pending;
+    uint64_t produced;
 } E2 = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER };
 
 static bool e2_wait_ready(void)
@@ -826,6 +829,8 @@ NAT(EN_swap)
         E2.tex = s->tex[k]; E2.pw = s->w; E2.ph = s->h;
     }
     E2.x = a[2].i; E2.y = a[3].i; E2.w = a[4].i > 0 ? a[4].i : s->w; E2.h = a[5].i > 0 ? a[5].i : s->h;
+    E2.gpu_on = E2.gpu_pending = false;
+    pthread_cond_broadcast(&E2.cv);
     E2.on = true; E2.seq++;
     pthread_mutex_unlock(&E2.lk);
     if (fb && bindFb) bindFb(0x8D40, (uint32_t)fb);
@@ -835,7 +840,7 @@ NAT(EN_swap)
 /* the GL thread Husk drives GLSurfaceView from: there EGL10 answers for the context it made */
 static pthread_t g_render_thread;
 NAT(EN_isRenderThread) { (void)self; (void)a; ret->j = 0; ret->z = pthread_equal(pthread_self(), g_render_thread) != 0; return true; }
-NAT(EN_hide) { (void)self; (void)a; (void)ret; pthread_mutex_lock(&E2.lk); E2.on = false; E2.seq++; pthread_mutex_unlock(&E2.lk); return true; }
+NAT(EN_hide) { (void)self; (void)a; (void)ret; pthread_mutex_lock(&E2.lk); E2.on = E2.gpu_on = E2.gpu_pending = false; E2.seq++; pthread_cond_broadcast(&E2.cv); pthread_mutex_unlock(&E2.lk); return true; }
 static const struct { const char *name, *sig; dvm_native_fn fn; } k_eglnative[] = {
     { "createContext", "(IJ)J", EN_createContext }, { "destroyContext", "(J)V", EN_destroyContext },
     { "createSurface", "(II)J", EN_createSurface }, { "destroySurface", "(J)V", EN_destroySurface },
@@ -854,8 +859,20 @@ static void app_frame_draw(overlay *o, overlay *up, int vw, int vh)
 {
     pthread_mutex_lock(&E2.lk);
     bool on = E2.on; uint32_t tex = E2.tex; int x = E2.x, y = E2.y, w = E2.w, h = E2.h;
-    if (on && !tex && E2.px) { ov_upload(up, E2.px, E2.pw, E2.ph); }
-    pthread_mutex_unlock(&E2.lk);
+    bool gpu = on && E2.gpu_on;
+    if (gpu && !tl_gl_frame_acquire(E2.gpu,&tex)) {
+        E2.gpu_on = false; E2.gpu_pending = false;
+        pthread_cond_broadcast(&E2.cv);
+        gpu = on = false;
+        tl_log_line("egl: GPU image import/wait failed; using CPU compositor on subsequent frames");
+    }
+    static uint64_t uploaded;
+    if (on && !gpu && !tex && E2.px && uploaded != E2.seq) {
+        ov_upload(up, E2.px, E2.pw, E2.ph); uploaded = E2.seq;
+    }
+    /* The image stays protected until a consumer fence is submitted. CPU
+     * frames and legacy shared textures retain their existing lock lifetime. */
+    if (!gpu) pthread_mutex_unlock(&E2.lk);
     if (!on) return;
     void (*viewport)(int32_t, int32_t, int32_t, int32_t) = gl_fn("glViewport");
     void (*useProgram)(uint32_t) = gl_fn("glUseProgram");
@@ -876,20 +893,58 @@ static void app_frame_draw(overlay *o, overlay *up, int vw, int vh)
     enableAttr(0);
     draw(0x0005, 0, 4);
     viewport(0, 0, vw, vh);
+    if (gpu) {
+        tl_gl_frame_release(E2.gpu);
+        E2.gpu_pending = false; pthread_cond_broadcast(&E2.cv);
+        pthread_mutex_unlock(&E2.lk);
+    }
 }
 /* For EGL: whether this runtime's compositor holds the screen, and an app's own EGL window's frame for it (NULL: no longer shown) */
 bool tl_javaapp_compositing(void) { pthread_mutex_lock(&E2.lk); bool r = E2.ready; pthread_mutex_unlock(&E2.lk); return r; }
 void tl_javaapp_app_pixels(const void *px, int w, int h)
 {
     pthread_mutex_lock(&E2.lk);
-    if (!px) { E2.on = false; E2.seq++; pthread_mutex_unlock(&E2.lk); return; }
+    E2.gpu_on = E2.gpu_pending = false; pthread_cond_broadcast(&E2.cv);
+    if (!px) { tl_gl_frame_reset(E2.gpu); E2.on = false; E2.seq++; pthread_mutex_unlock(&E2.lk); return; }
     size_t n = (size_t)w * h * 4;
     if (E2.pw != w || E2.ph != h || !E2.px) E2.px = realloc(E2.px, n);
     if (E2.px) memcpy(E2.px, px, n);
+    E2.produced++;
     E2.pw = w; E2.ph = h; E2.tex = 0;
     E2.x = 0; E2.y = 0; E2.w = A.cfg.width; E2.h = A.cfg.height;
     E2.on = true; E2.seq++;
     pthread_mutex_unlock(&E2.lk);
+}
+bool tl_javaapp_app_gpu(void *dpy, void *surface, int w, int h)
+{
+    pthread_mutex_lock(&E2.lk);
+    if (!E2.ready || !E2.gpu || dpy != E2.dpy) { pthread_mutex_unlock(&E2.lk); return false; }
+    /* One pending frame provides backpressure from the actual compositor.
+     * A pause/shutdown must not leave a producer waiting indefinitely. */
+    struct timespec deadline; clock_gettime(CLOCK_REALTIME,&deadline);
+    deadline.tv_nsec += 100000000;
+    if (deadline.tv_nsec >= 1000000000) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000; }
+    while (E2.gpu_pending) if (pthread_cond_timedwait(&E2.cv,&E2.lk,&deadline)) break;
+    int64_t start = now_ns();
+    bool ok = tl_gl_frame_publish(E2.gpu,surface,w,h);
+    if (ok) {
+        E2.pw = w; E2.ph = h; E2.tex = 0;
+        E2.x = E2.y = 0; E2.w = A.cfg.width; E2.h = A.cfg.height;
+        E2.gpu_on = E2.gpu_pending = E2.on = true; E2.seq++;
+        E2.produced++;
+        static unsigned n; static int64_t ns;
+        ns += now_ns()-start;
+        if (++n == 120) { tl_log_line("egl: GPU compositor %dx%d copy/fence enqueue average %.2f ms/frame (no CPU pixels)", w,h,(double)ns/n/1e6); n=0; ns=0; }
+    }
+    pthread_mutex_unlock(&E2.lk);
+    return ok;
+}
+unsigned tl_javaapp_gl_error(void)
+{
+    pthread_mutex_lock(&E2.lk);
+    unsigned e = tl_gl_frame_take_guest_error(E2.gpu);
+    pthread_mutex_unlock(&E2.lk);
+    return e;
 }
 static uint64_t app_frame_seq(void) { pthread_mutex_lock(&E2.lk); uint64_t q = E2.seq; pthread_mutex_unlock(&E2.lk); return q; }
 static bool app_frame_on(void) { pthread_mutex_lock(&E2.lk); bool q = E2.on; pthread_mutex_unlock(&E2.lk); return q; }
@@ -932,6 +987,8 @@ static void *gl_main(void *arg)
     ov_init_flip(&appup, true);
     g_render_thread = pthread_self();
     pthread_mutex_lock(&E2.lk);
+    if (!getenv("TL_GPU_COMPOSITOR_DISABLE")) E2.gpu = tl_gl_frame_create(tl_egl_host_proc,dpy);
+    tl_log_line("egl: native-window GPU image compositor %s", E2.gpu ? "available" : "unavailable; CPU fallback");
     E2.dpy = dpy; E2.cfg = cfg; E2.ui = ui; E2.es3 = es3; E2.ready = true;
     pthread_cond_broadcast(&E2.cv);
     pthread_mutex_unlock(&E2.lk);
@@ -943,6 +1000,8 @@ static void *gl_main(void *arg)
     jobj *gl10 = NULL;
     jvalue p1[1];
     int64_t next = now_ns();
+    int64_t perf_start = next;
+    uint64_t perf_last = 0, perf_shown = 0;
     while (!atomic_load(&A.ended)) {
         if (atomic_load(&A.paused)) { usleep(20000); next = now_ns(); continue; }
         bool drew = false;
@@ -1013,13 +1072,32 @@ static void *gl_main(void *arg)
             if (!app) app_frame_draw(&appov, &appup, A.cfg.width, A.cfg.height);
             if (tl_ui_has_frame()) ov_draw(&ov, A.cfg.width, A.cfg.height);
             swapBuffers(dpy, surf);
+            if (!app && app_fresh) perf_shown++;
             atomic_fetch_add(&A.frames, 1);
+        }
+        int64_t perf_now = now_ns();
+        if (perf_now - perf_start >= 5000000000ll) {
+            pthread_mutex_lock(&E2.lk);
+            uint64_t produced = E2.produced;
+            bool gpu_on = E2.gpu_on;
+            pthread_mutex_unlock(&E2.lk);
+            if (produced != perf_last) {
+                double seconds = (double)(perf_now - perf_start) / 1e9;
+                tl_log_line("javaapp: compositor %s produced=%.1f fps presented=%.1f fps over %.2f s", gpu_on ? "GPU" : "CPU", (produced-perf_last)/seconds, perf_shown/seconds, seconds);
+            }
+            perf_start = perf_now; perf_last = produced; perf_shown = 0;
         }
         next += 1000000000ll / 60;
         int64_t late = now_ns() - next;
         if (late > 100000000ll) next = now_ns();
         else if (late < 0) { struct timespec ts = { 0, (long)(-late) }; nanosleep(&ts, NULL); }
     }
+    makeCurrent(dpy, surf, surf, ui);
+    pthread_mutex_lock(&E2.lk);
+    E2.ready = E2.gpu_on = E2.gpu_pending = false;
+    tl_gl_frame_destroy(E2.gpu); E2.gpu = NULL;
+    pthread_cond_broadcast(&E2.cv);
+    pthread_mutex_unlock(&E2.lk);
     return NULL;
 }
 

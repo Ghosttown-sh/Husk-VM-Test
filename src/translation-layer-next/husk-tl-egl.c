@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "husk-tl-bionic.h"
 #include "husk-tl-ld.h"
@@ -272,6 +273,14 @@ static void *tex_window_of(EGLSurface s)
  * screen under the app's views. Two window surfaces on one layer is what a phone refuses (EGL_BAD_ALLOC). */
 __attribute__((weak)) bool tl_javaapp_compositing(void);
 __attribute__((weak)) void tl_javaapp_app_pixels(const void *px, int w, int h);
+__attribute__((weak)) bool tl_javaapp_app_gpu(void *dpy, void *surface, int w, int h);
+__attribute__((weak)) unsigned tl_javaapp_gl_error(void);
+static unsigned w_glGetError(void)
+{
+    unsigned saved = tl_javaapp_gl_error ? tl_javaapp_gl_error() : 0;
+    unsigned (*real)(void) = tl_egl_host_proc("glGetError");
+    return saved ? saved : real ? real() : 0;
+}
 #define MAX_COMP_SURFACES 8
 static EGLSurface g_comp_surf[MAX_COMP_SURFACES];
 static bool comp_surface(EGLSurface s)
@@ -432,9 +441,22 @@ static EGLBoolean w_eglSwapBuffers(EGLDisplay d, EGLSurface s)
     unsigned long n = atomic_fetch_add(&E.presented, 1) + 1;
     if (comp_surface(s)) {
         EGLint w = 0, h = 0;
+        a_eglQuerySurface(d, s, EGL_WIDTH, &w); a_eglQuerySurface(d, s, EGL_HEIGHT, &h);
+        struct timespec start, end; clock_gettime(CLOCK_MONOTONIC, &start);
+        if (tl_javaapp_app_gpu && tl_javaapp_app_gpu(d, s, w, h)) {
+            if (n <= 3 || n % 600 == 0) tl_log_line("egl: swap #%lu (GPU image compositor)", n);
+            return EGL_TRUE;
+        }
         const uint8_t *px = read_back(d, s, &w, &h);
         if (px && tl_javaapp_app_pixels) tl_javaapp_app_pixels(px, w, h);
-        if (n <= 3 || n % 600 == 0) tl_log_line("egl: swap #%lu (composited)", n);
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        static __thread unsigned long samples; static __thread double total;
+        total += (end.tv_sec-start.tv_sec)*1000.0+(end.tv_nsec-start.tv_nsec)/1e6;
+        if (++samples == 120) {
+            tl_log_line("egl: CPU compositor %dx%d readback+copy average %.2f ms/frame", w, h, total/samples);
+            samples = 0; total = 0;
+        }
+        if (n <= 3 || n % 600 == 0) tl_log_line("egl: swap #%lu (CPU composited)", n);
         return EGL_TRUE;
     }
     if (n <= 3 || n % 600 == 0) {
@@ -788,6 +810,7 @@ void *tl_egl_resolve(const char *name)
 }
 static void *egl_resolve(const char *name)
 {
+    if (!strcmp(name,"glGetError")) return (void *)w_glGetError;
     for (int i = 0; k_noop_names[i]; i++) if (!strcmp(k_noop_names[i], name)) return (void *)w_gl_noop;
     if (g_es31_shim) for (int i = 0; k_es31_stub_names[i]; i++) if (!strcmp(k_es31_stub_names[i], name)) {
         void *real = E.ready && a_eglGetProcAddress ? a_eglGetProcAddress(name) : NULL;
@@ -814,9 +837,18 @@ static void *egl_resolve(const char *name)
     return trace && name[0] == 'g' && name[1] == 'l' ? glt_wrap(name, real) : real;
 }
 
+void *tl_egl_host_proc(const char *name)
+{
+    if (!E.ready || !a_eglGetProcAddress) return NULL;
+    void *p = a_eglGetProcAddress(name);
+    if (!p && name[0] == 'e') p = dlsym(E.egl,name);
+    return p;
+}
+
 /* eglGetProcAddress for the guest */
 static void *w_eglGetProcAddress(const char *name) { return tl_egl_resolve(name); }
 const tl_bionic_entry tl_tab_egl[] = {
+    { "glGetError", w_glGetError },
     TL_WRAP("eglGetProcAddress", w_eglGetProcAddress), TL_WRAP("glGetString", w_glGetString),
     { "eglGetDisplay", w_eglGetDisplay }, { "eglInitialize", w_eglInitialize }, { "eglTerminate", w_eglTerminate },
     { "eglQueryString", w_eglQueryString }, { "eglGetConfigs", w_eglGetConfigs }, { "eglChooseConfig", w_eglChooseConfig },

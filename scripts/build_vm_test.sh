@@ -47,6 +47,10 @@ sh tests/translation-layer/run_vm_range_macos.sh 2>&1 | tee build/evidence/vm-ra
 sh tests/translation-layer/run_compressed_heap.sh 2>&1 | tee build/evidence/compressed-heap.log
 sh tests/translation-layer/run_guest_ram_plan.sh 2>&1 | tee build/evidence/qemu-ram.log
 sh tests/translation-layer/run_apk_path.sh 2>&1 | tee build/evidence/apk-path.log
+sh tests/translation-layer/run_gl_frame.sh 2>&1 | tee build/evidence/gl-frame.log
+if [ "$(uname -m)" = arm64 ]; then
+    python3 tests/translation-layer/run_gl_frame_angle_macos.py 2>&1 | tee build/evidence/gl-frame-metal.log
+fi
 clang -std=c11 -Wall -Wextra -Isrc/translation-layer tests/translation-layer/plan_test.c \
     src/translation-layer/husk-tl-elf.c -o build/plan-test
 build/plan-test | tee build/evidence/page-plan.log

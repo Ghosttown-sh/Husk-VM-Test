@@ -33,6 +33,8 @@ bool tl_egl_init(const char *egl_path, const char *gles_path, const char *frame_
 
 /* The address of a GLES/EGL function by name, adapters first, or NULL. */
 void *tl_egl_resolve(const char *name);
+/* Internal host-ABI calls, bypassing guest adapters and optional trace thunks. */
+void *tl_egl_host_proc(const char *name);
 
 unsigned long tl_egl_frames_presented(void);
 
