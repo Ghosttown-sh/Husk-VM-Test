@@ -13,7 +13,8 @@
 /* An isolated range in the Mac's real task map. The synthetic heap mmap
  * fails after a reclaimed cage has already been consumed. The fallback's
  * task bounds are constrained here; all mappings/protections remain real. */
-#define START 0x7200000000ULL
+static vm_address_t window_start;
+#define START window_start
 #define END   (START + 0x80000000ULL)
 static bool bounded = true, inject_race;
 static vm_address_t raced;
@@ -105,9 +106,16 @@ static void readv_tests(void) {
 }
 int main(void) {
     printf("VM gap integration host page size: %d bytes\n",getpagesize());
+    /* Ask the actual host for an aligned test window. A fixed 0x7200000000
+     * address is outside some runners' admitted map range, before the code
+     * under test is even reached. Keep the trailing guard, free only our own
+     * interior, and constrain production enumeration to this real window. */
+    assert(vm_map(mach_task_self(),&window_start,0x80000000ULL+getpagesize(),
+        0xfffffff,VM_FLAGS_ANYWHERE,MACH_PORT_NULL,0,FALSE,VM_PROT_NONE,
+        VM_PROT_ALL,VM_INHERIT_COPY)==KERN_SUCCESS);
+    assert(!(window_start & 0xfffffff));
     vm_address_t boundary=END;
-    assert(vm_map(mach_task_self(),&boundary,getpagesize(),0,VM_FLAGS_FIXED,MACH_PORT_NULL,
-        0,FALSE,VM_PROT_NONE,VM_PROT_ALL,VM_INHERIT_COPY)==KERN_SUCCESS);
+    assert(munmap((void *)window_start,0x80000000ULL)==0);
     assert(test_mmap(NULL,0x1fffc000,PROT_NONE,MAP_PRIVATE|MAP_ANON,-1,0)==MAP_FAILED);
     task_vm_info_data_t before={0}, after={0}; assert(vm_info(&before));
     inject_race=true;
