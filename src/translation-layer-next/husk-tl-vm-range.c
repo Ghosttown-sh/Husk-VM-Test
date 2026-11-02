@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <mach/mach.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/mman.h>

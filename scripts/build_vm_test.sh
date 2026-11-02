@@ -73,6 +73,7 @@ python3 tools/stage_vm_test_dependencies.py "$OFFICIAL_IPA"
 # the staged ANGLE/Java/PS4 resources remain the verified release versions.
 bash scripts/fetch_sources.sh
 bash scripts/build_ios.sh libffi glib pixman libucontext libslirp
+python3 tools/stage_vm_gpu_headers.py | tee build/evidence/gpu-build-headers.log
 cp build/ios-arm64/cross-darwin.meson build/ios-arm64/cross-ios-darwin.meson
 PKG_CONFIG_LIBDIR="$ROOT/build/ios-arm64/sysroot/lib/pkgconfig:$ROOT/build/ios-arm64/sysroot/share/pkgconfig" \
     bash scripts/build_gpu_ios.sh
