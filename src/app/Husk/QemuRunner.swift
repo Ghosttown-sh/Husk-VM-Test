@@ -916,15 +916,23 @@ final class QemuRunner: ObservableObject {
                                             : GuestImage.defaultSmp
     }
 
-    private func guestMemoryMiB() -> Int {
+    private func pinnedGuestMemory(_ mib: Int) throws -> GuestRAMPlan {
+        let plan = try GuestRAMPlan.pinned(mib: mib) { size in
+            ramFileReady && largestMappableMiB([size]) == size
+        }
+        QemuRunner.shared.lastGuestMiB = plan.mib
+        return plan
+    }
+
+    private func guestMemoryPlan() throws -> GuestRAMPlan {
         // Same reasoning as the resolution: the shipped snapshot was saved with
         // exactly this much RAM, and QEMU rejects a restore that differs by a
-        // byte. No probing, no stepping down -- this number or nothing.
+        // byte. Prepare this exact size; never step a snapshot down.
         if GuestImage.shared.hasShippedSnapshot {
             let mib = GuestImage.shared.snapshotPins.mib
             QemuRunner.shared.lastGuestMiB = mib
             HuskLog.log("qemu", "using the shipped snapshot: guest pinned to \(mib) MiB")
-            return mib
+            return try pinnedGuestMemory(mib)
         }
 
         // A snapshot pins the size. Restoring into a differently sized machine
@@ -947,7 +955,7 @@ final class QemuRunner: ObservableObject {
            let recorded = try? String(contentsOfFile: snapshotSizePath, encoding: .utf8),
            let mib = Int(recorded.trimmingCharacters(in: .whitespacesAndNewlines)), mib > 0 {
             HuskLog.log("qemu", "snapshot exists; using its guest size of \(mib) MiB")
-            return mib
+            return try pinnedGuestMemory(mib)
         }
 
         let physMiB = Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024))
@@ -976,7 +984,8 @@ final class QemuRunner: ObservableObject {
 
         guard availableMiB > 0 else {
             HuskLog.log("qemu", "available memory unknown; falling back to 1536 MiB guest")
-            return 1536
+            QemuRunner.shared.lastGuestMiB = 1536
+            return GuestRAMPlan(mib: 1536, fileBacked: false)
         }
 
         // The JIT is only subtracted if it has not been taken yet. Prewarming
@@ -1030,7 +1039,9 @@ final class QemuRunner: ObservableObject {
                               + "staying below it")
         }
         let fileBackedTarget = ramFileReady ? largestMappableMiB(candidates) : nil
-        let target = fileBackedTarget.map { max(anonymousTarget, $0) } ?? anonymousTarget
+        let plan = GuestRAMPlan.adaptive(anonymousMiB: anonymousTarget,
+                                        probedFileMiB: fileBackedTarget)
+        let target = plan.mib
 
         QemuRunner.shared.lastGuestMiB = target
         try? String(target).write(toFile: ramAttemptPath, atomically: true, encoding: .utf8)
@@ -1043,13 +1054,14 @@ final class QemuRunner: ObservableObject {
                              ? "from a file-backed block (anonymous memory could only "
                              + "have given it \(anonymousTarget) MiB)"
                              : "as anonymous memory"))
-        return target
+        return plan
     }
 
     /// Phase 1 guest: LineageOS booting directly under QEMU via UEFI.
-    private func phase1Arguments() -> [String] {
+    private func phase1Arguments() throws -> [String] {
         let guest = GuestImage.shared
-        let memMiB = guestMemoryMiB()
+        let memory = try guestMemoryPlan()
+        let memMiB = memory.mib
 
         // Modelled on android-lineage-qemu's own documented qemu-system line for
         // the arm64only build, because that is the configuration the image is
@@ -1060,7 +1072,7 @@ final class QemuRunner: ObservableObject {
         // that fits iOS's jetsam ceiling rather than their flat 2048.
         return [
             "qemu-system-aarch64",
-            "-M", ramFileReady ? "virt,highmem=on,memory-backend=huskram"
+            "-M", memory.fileBacked ? "virt,highmem=on,memory-backend=huskram"
                                : "virt,highmem=on",
 
             // Their emulation line, not cortex-a72. "max" is what the image is
@@ -1202,7 +1214,7 @@ final class QemuRunner: ObservableObject {
             // runs the machine. It was worth it while the GPU path was being
             // debugged and costs frames now that it works.
 
-        ] + (ramFileReady ? [
+        ] + (memory.fileBacked ? [
             // Guest RAM as a MAP_SHARED file rather than anonymous memory, so
             // the kernel can write it back and evict it instead of counting all
             // of it against our jetsam footprint. share=on is what makes the
@@ -1345,7 +1357,18 @@ final class QemuRunner: ObservableObject {
 
     private func run() {
         probeGL()
-        let args = (profile == .phase0Alpine) ? phase0Arguments() : phase1Arguments()
+        let args: [String]
+        do {
+            if profile == .phase0Alpine { args = phase0Arguments() }
+            else { args = try phase1Arguments() }
+        } catch {
+            HuskLog.log("qemu", "cannot prepare the snapshot's RAM backing file: \(error)")
+            DispatchQueue.main.async {
+                self.setupMessage = "Could not prepare RAM for the Android snapshot. See the Husk log."
+            }
+            isRunning = false
+            return
+        }
         HuskLog.log("qemu", "profile: \(profile.rawValue)")
         HuskLog.log("qemu", "DISPLAY MODE: "
                           + (QemuRunner.glProven ? "GPU (virtio-gpu-gl)"
