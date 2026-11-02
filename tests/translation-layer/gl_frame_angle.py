@@ -78,6 +78,45 @@ def main():
     attach=fn('glFramebufferTexture2D',None,U,U,U,U,I);status=fn('glCheckFramebufferStatus',U,U)
     read=fn('glReadPixels',None,I,I,I,I,U,U,P);finish=fn('glFinish',None)
     target=U();genfb(1,C.byref(target))
+    # Exercise the actual compositor operation: sample the shared image with a
+    # shader into a consumer-owned framebuffer. Do not attach the imported
+    # private Metal texture itself for CPU readback (not a production operation).
+    output=U();gen(1,C.byref(output));bind(0xde1,output)
+    fn('glTexImage2D',None,U,I,I,I,I,I,U,U,P)(0xde1,0,0x1908,32,32,0,0x1908,0x1401,None)
+    bindfb(0x8d40,target);attach(0x8d40,0x8ce0,0xde1,output,0)
+    assert status(0x8d40)==0x8cd5
+    shader_new=fn('glCreateShader',U,U)
+    shader_src=fn('glShaderSource',None,U,I,C.POINTER(C.c_char_p),P)
+    compile_shader=fn('glCompileShader',None,U)
+    shader_status=fn('glGetShaderiv',None,U,U,P)
+    shaders=[]
+    for kind,source in ((0x8b31,b'attribute vec2 p; varying vec2 uv; void main(){uv=p*0.5+0.5;gl_Position=vec4(p,0.,1.);}'),
+                        (0x8b30,b'precision mediump float; varying vec2 uv; uniform sampler2D t; void main(){gl_FragColor=texture2D(t,uv);}')):
+        sh=shader_new(kind);src=C.c_char_p(source);shader_src(sh,1,C.byref(src),None);compile_shader(sh)
+        value=I();shader_status(sh,0x8b81,C.byref(value));assert value.value
+        shaders.append(sh)
+    program=fn('glCreateProgram',U)()
+    for sh in shaders: fn('glAttachShader',None,U,U)(program,sh)
+    fn('glBindAttribLocation',None,U,U,C.c_char_p)(program,0,b'p')
+    fn('glLinkProgram',None,U)(program)
+    value=I();fn('glGetProgramiv',None,U,U,P)(program,0x8b82,C.byref(value));assert value.value
+    fn('glUseProgram',None,U)(program)
+    vbo=U();fn('glGenBuffers',None,I,P)(1,C.byref(vbo))
+    fn('glBindBuffer',None,U,U)(0x8892,vbo)
+    vertices=(C.c_float*8)(-1,-1,1,-1,-1,1,1,1)
+    fn('glBufferData',None,U,C.c_ssize_t,P,U)(0x8892,C.sizeof(vertices),vertices,0x88e4)
+    fn('glVertexAttribPointer',None,U,I,U,U,I,P)(0,2,0x1406,0,0,None)
+    fn('glEnableVertexAttribArray',None,U)(0)
+    fn('glViewport',None,I,I,I,I)(0,0,32,32)
+    draw=fn('glDrawArrays',None,U,I,I)
+    def consume(texture):
+        bindfb(0x8d40,target);attach(0x8d40,0x8ce0,0xde1,output,0)
+        bind(0xde1,texture);draw(0x0005,0,4)
+        assert error()==0
+    color(0,0,1,1);clear(0x4000)
+    baseline=(C.c_ubyte*4)();read(0,0,1,1,0x1908,0x1401,baseline)
+    assert list(baseline)==[0,0,255,255]
+    print('Consumer-owned framebuffer readback baseline passed',flush=True)
     assert current(display,surface,surface,producer)
     guest=U();gen(1,C.byref(guest));bind(0xde1,guest)
     dummy=U();genfb(1,C.byref(dummy))
@@ -99,14 +138,13 @@ def main():
         assert current(display,ui,ui,consumer)
         if index == 0: print('First consumer acquire',flush=True)
         assert bridge.tl_gl_frame_acquire(frame,C.byref(tex)),('acquire',hex(error()))
-        bindfb(0x8d40,target);attach(0x8d40,0x8ce0,0xde1,tex,0)
-        assert status(0x8d40)==0x8cd5
+        consume(tex)
         read(0,0,1,1,0x1908,0x1401,pixel)
         assert list(pixel)==[255*(index%2),255*(1-index%2),0,255],list(pixel)
         bridge.tl_gl_frame_release(frame)
         assert error()==0
         times.append((time.perf_counter()-start)*1000)
-    print('PASS: 30 real GPU image transfers at 2420x1668 across nonsharing ES3/ES2 contexts; exact pixel colors, guest framebuffer/texture/error preserved')
+    print('PASS: 30 real GPU image transfers and compositor shader draws at 2420x1668 across nonsharing ES3/ES2 contexts; exact pixel colors, guest framebuffer/texture/error preserved')
     print(f'Host copy/fence/verification-readback mean {sum(times)/len(times):.2f} ms (includes test-only pixel read; not iPad FPS)')
     # Queue several producer/consumer turns with no CPU readback/finish between
     # them. Snapshot each consumption on the GPU, then verify all snapshots.
@@ -119,7 +157,7 @@ def main():
         assert bridge.tl_gl_frame_publish(frame,surface,width,height)
         assert current(display,ui,ui,consumer)
         assert bridge.tl_gl_frame_acquire(frame,C.byref(tex))
-        bindfb(0x8d40,target);attach(0x8d40,0x8ce0,0xde1,tex,0)
+        consume(tex)
         bind(0xde1,snapshots[index]);copy_image(0xde1,0,0x1908,0,0,1,1,0)
         assert error()==0
         bridge.tl_gl_frame_release(frame)

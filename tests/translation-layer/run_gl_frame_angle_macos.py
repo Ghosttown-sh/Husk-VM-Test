@@ -37,7 +37,7 @@ for source, flags, obj in (
     ('husk-tl-gl-frame.c', ['-std=c11'], 'frame.o'),
     ('husk-tl-metal-frame.m', ['-fobjc-arc'], 'metal.o'),
 ):
-    subprocess.run(['clang', *flags, '-Wall', '-Wextra', '-Werror', '-O2', '-c',
+    subprocess.run(['clang', *flags, '-Wall', '-Wextra', '-Werror', '-O2', '-g', '-c',
                     str(root / 'src/translation-layer-next' / source), '-o', str(out / obj)], check=True)
 subprocess.run(['clang', '-dynamiclib', str(out / 'frame.o'), str(out / 'metal.o'),
                 '-framework', 'Metal', '-framework', 'Foundation', '-o', str(bridge)], check=True)
@@ -46,5 +46,6 @@ for samples in ('0', '4'):
                str(out), str(bridge), '--backend', 'metal', '--samples', samples]
     result = subprocess.run(command)
     if result.returncode < 0:
-        subprocess.run(['lldb','--batch','-o','run','-o','thread backtrace all','--',*command], timeout=60)
+        subprocess.run(['lldb','--batch','-o','settings set target.process.stop-on-exec false',
+                        '-o','run','-o','thread backtrace all','--',*command], timeout=60)
     result.check_returncode()
