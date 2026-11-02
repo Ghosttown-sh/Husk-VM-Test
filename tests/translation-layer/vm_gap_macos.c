@@ -50,6 +50,7 @@ static kern_return_t test_vm_map(vm_map_t task, vm_address_t *at, vm_size_t n,
 #define task_info test_task_info
 #define mmap test_mmap
 #define vm_map test_vm_map
+#define TL_VM_NO_DELEGATED_RANGES 1 /* This suite tests ordinary gaps only. */
 #include "../../src/translation-layer-next/husk-tl-vm.c"
 #include "production_vm.inc"
 #undef task_info

@@ -458,3 +458,46 @@ identifier to update in place. Do not uninstall the app or clear its data.
 Complete editor launch, touch input, chart loading/editing/saving and reopening
 still require the user's physical test. If startup fails, retain the full new
 run report and a matching-time iPadOS JetsamEvent/crash report when available.
+
+## Physical follow-up: b4509b7, 2026-11-02 20:24 UTC
+
+The user tested this IPA. Metadata, ANGLE ES 3.0, SwappyWrapper and AAudio
+initialization still succeeded. The latest allocation failure is now measured:
+`footprint=1113 MiB`, `available=4006 MiB`, largest ordinary VM gap
+`0x10000000`, requested size `0x1fffc000`, zero suitable mapping attempts,
+task bounds `0x102a48000..0x7180000000`. About fourteen retained 256 MiB
+reservations precede it. Unity then reports a 25,348,708-byte Serialization
+allocation failure. These are virtual reservations, not 512 MiB of dirty RAM
+per call. This disproves the hypothesis that merely searching ordinary gaps
+is sufficient for this run. It does not establish why the process ultimately
+terminated; no matching OS termination/Jetsam report has been provided.
+
+The original caller at ELF VA `0x489150` explicitly divides a 256 MiB alignment
+by the reported page size before calling Baselib. This is not a fourfold
+allocation inflation caused by reporting 16 KiB pages. Reducing getpagesize,
+returning 256 MiB for a 512 MiB mmap, or overwriting inaccessible map entries
+would violate the existing contracts and is not the fix.
+
+Darwin also has padding VA which is deliberately represented as inaccessible
+map entries. It is not an ordinary free gap. Apple's exported
+`mach_vm_range_create` interface delegates such space after kernel validation;
+`vm.malloc_ranges` reports the eligible intervals. The new fallback uses that
+interface only after heap mmap and real-gap allocation fail. It proposes only
+max-protection-zero, non-submap padding within the reported intervals. The
+kernel must accept and create the entire requested PROT_NONE mapping. No
+entitlements, process limits, guessed iPad addresses, guest constants, original
+APK bytes, or live JIT aliases change.
+
+Each registration is exactly the failed request's rounded size, with no
+speculative extra capacity. Boundaries are remembered for reuse after guest
+munmap (kernel registrations persist for the task lifetime). Reuse performs
+atomic no-overwrite mappings inside a single registration. Unsupported APIs,
+unavailable bounds, kernel refusal, metadata allocation failure and true
+exhaustion all retain ENOMEM. This path still requires physical-iPad validation.
+
+Primary sources: Apple's [range ABI](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/mach/vm_types.h),
+[kernel implementation](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/vm/vm_user.c),
+[range reporting](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vm/vm_unix.c),
+and [native regression examples](https://github.com/apple-oss-distributions/xnu/blob/main/tests/vm/vm_ranges.c).
+Public XNU is implementation evidence, not a claim that every detail of iPadOS
+27's private kernel is identical. API errors are logged for that reason.

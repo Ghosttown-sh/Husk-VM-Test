@@ -81,6 +81,11 @@ void *tl_vm_reserve_gap(size_t size)
     }
     tl_log_line("mm: no reservable VM gap len=%#zx largest_gap=%#zx attempts=%u mach_error=%d bounds=%#llx..%#llx",
         size, (size_t)largest_gap, attempts, last, (unsigned long long)info.min_address, (unsigned long long)limit);
+#ifndef TL_VM_NO_DELEGATED_RANGES
+    /* iOS also reserves inaccessible padding between its allocation ranges.
+     * It is NOT a free gap: only mach_vm_range_create may delegate it to us. */
+    return tl_vm_reserve_delegated(size);
+#endif
     errno = ENOMEM;
     return MAP_FAILED;
 }
