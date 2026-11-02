@@ -1,6 +1,6 @@
 # Follow-up: stream rate and writable heap exhaustion
 
-The physical iPad report for `41957ae-dirty` confirms that the app opens and all reported emulated-code-store counts are zero. The user reports double-speed audio and an OGG import crash. These are new acceptance failures, not evidence of completed device validation.
+The physical iPad report for `41957ae-dirty` confirms that the app opens and all reported emulated-code-store counts are zero. The user reports double-speed songs (interface effects sound normal) and an OGG import crash. These are new acceptance failures, not evidence of completed device validation.
 
 ## Audio stream rate
 
@@ -11,6 +11,8 @@ Host queue counters increase by roughly 240640 frames per five seconds for AAudi
 Local inspection of the unchanged Unity library shows its AAudio initializer resolving the setter at offset `0xfa8994` and calling it with the mixer's rate at `0xfa8ca0..0xfa8cac`. This initializer does not resolve/query `AAudioStream_getSampleRate`. Thus a mixer configured for 24000 Hz would be consumed at twice its intended rate. **The supplied old log does not record the requested value**, so the exact rate on this device remains to be confirmed, rather than inferred from the old hardcoded 48000 message.
 
 The builder now retains the requested rate. Opening, the getter, host submission and fallback pacing consistently use it. Zero still chooses 48000 Hz; unsupported rates fail. Hardware-rate reporting remains distinct from the software stream rate. New logs report both requested and selected values. PCM conversion uses bounded stack chunks, preserving frame count and mono/stereo semantics without retaining per-thread conversion allocations. The host's existing low-rate interpolation doubles samples and queue rate together, preserving duration.
+
+The NativeAudio plugin's separate OpenSL format initializer uses 16-bit samples, 16-bit containers and two channels. This matches the current OpenSL frame-size calculation; no global playback-speed multiplier or OpenSL speed adjustment is introduced.
 
 The AAudio regression compiles the actual adapter, checks the real symbol-table binding, and exercises 18 combinations of rate and channel count. Each written stream submits one second of PCM; callback streams receive 256 frames per call. Tests check PCM channel values, rate, duration and frame counters under ASan/UBSan. Existing host-queue tests separately check low-rate interpolation and concurrent playback. These are adapter/backend tests, not a listening test on the user's hardware.
 
@@ -26,4 +28,10 @@ Policy tests cover both reported sizes, protection failure rollback and excluded
 
 ## Delivery status
 
-Windows policy tests pass. Mac integration, sanitizer checks, IPA packaging and physical-device verification are pending for this change. Existing startup, JIT, GPU compositor and file-import path fixes remain in place; the same test bundle identifiers and prior IPA rollback copies are retained.
+The Windows policy test fails on the previous delivered source at the import-sized RW allocation assertion and passes after the fix, including protection rollback and existing startup/cage checks.
+
+[Mac run 41542594865](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41542594865) completed successfully. The ARM64 Darwin host uses 16384-byte pages. All 18 AAudio rate/channel combinations and the 11-producer host suite passed with ASan/UBSan. The 16 import-sized gap recoveries and 8 delegated-range reuse cases passed, as did the existing VM, file-path and real ANGLE/Metal regressions. This Mac lacks kernel range registration bounds, so the delegated-range suite used its explicitly reported registration-contract model with real Mach mappings; this is not a claim of iPad kernel delegation verification.
+
+The IPA reports **`4feb244-dirty`**, built from `4feb2440d1e0209bb50571e4c40351b278a283a6` (dependency staging adds the dirty suffix). Size: 142254846 bytes. SHA256: `7437a10ef085c2192d82ef64e72088075abe443bd923de636a2aceda01dd6c7b`. Packaging passed strict code-signature checks; local validation confirmed nine ARM64 iOS binaries, bundle identities, resources, ZIP integrity and both new implementation markers.
+
+Existing startup, JIT, GPU compositor and file-import path fixes remain in place. The same test bundle identifiers and prior IPA rollback copies are retained. Physical-device song speed, OGG import and editor/save verification remain pending. On the iPad, check the new build line and retry the same song and import; if needed, retain the `aaudio: requested rate=` and `mm: recovered data mapping`/failure lines for the next diagnosis.
