@@ -44,6 +44,9 @@ static int getpagesize(void) { return TL_XMEM_PAGE; }
 static struct region { uintptr_t addr; size_t size; int prot; } maps[32];
 static int nmaps, calls, unmaps, fail_errno, injected_retry_errno, dealloc_fails;
 static int guest_errno, loaded, log_clobbers_errno;
+static bool codewrite_on;
+static int jit_allocations;
+static uint8_t jit_rx[65536], jit_rw[65536];
 static void *last_hint;
 static size_t last_size;
 static int last_prot, last_flags, last_fd;
@@ -95,10 +98,12 @@ static bool husk_binder_is_fd(int fd) { return false; }
 static void *husk_binder_mmap(int fd,size_t n) { assert(false); return NULL; }
 static int fcntl(int fd,int op,char *p) { return -1; }
 static void *tl_ld_map_code(const char *p,uint64_t o,size_t n,void *a) { return NULL; }
-static bool tl_codewrite_enabled(void) { return false; }
-static bool phone_jit(void) { return false; }
-static bool tl_xmem_near(void *a,size_t n) { return false; }
-static bool tl_xmem_alloc(size_t n,uint8_t **rx,uint8_t **rw) { return false; }
+static bool tl_codewrite_enabled(void) { return codewrite_on; }
+static bool phone_jit(void) { return true; }
+static bool tl_xmem_near(void *a,size_t n) { return true; }
+static bool tl_xmem_alloc(size_t n,uint8_t **rx,uint8_t **rw) {
+    assert(n <= sizeof(jit_rw)); jit_allocations++; *rx=jit_rx; *rw=jit_rw; return true;
+}
 static bool tl_ld_covers(void *a,size_t n) { return loaded; }
 static void *shifted_file_map(void *a,size_t n,int p,int f,int fd,long off) { assert(false); return MAP_FAILED; }
 static int prot_filter(int p,const char *what) { return p & ~PROT_EXEC; }
@@ -114,6 +119,7 @@ static void tl_vm_log_state(const char *reason) { (void)reason; }
 static void reset(bool prewarm) {
     nmaps=calls=unmaps=fail_errno=injected_retry_errno=dealloc_fails=loaded=log_clobbers_errno=0;
     g_compressed_heap=0; g_nphantom=0; guest_errno=123;
+    codewrite_on=false; jit_allocations=0;
     if (prewarm) { husk_prepare_compressed_heap(); assert(g_compressed_heap==START); }
     /* Three live JIT/runtime ranges, leaving only separated 256 MiB holes
      * beside the 4 GiB speculative cage. None may be overwritten/released. */
@@ -132,6 +138,7 @@ static void blockers_intact(void) {
 }
 int main(void) {
     const size_t unity=0x1fffc000;
+    void *p;
     if (getenv("TL_MM_MAX_GIB")) {
         reset(true);
         assert(b_mmap(NULL,unity,0,0x22,-1,0)==MAP_FAILED);
@@ -140,9 +147,17 @@ int main(void) {
         return 0;
     }
     reset(true);
+    codewrite_on=true;
+    p=b_mmap((void *)(START+4*GIB),16384,PROT_READ|PROT_WRITE,0x22,-1,0);
+    assert(p!=MAP_FAILED && p!=jit_rx && jit_allocations==0 && calls==1);
+    assert(last_prot==(PROT_READ|PROT_WRITE));
+    assert(b_mmap(NULL,16384,PROT_READ|PROT_EXEC,0x22,-1,0)==jit_rx);
+    assert(jit_allocations==1);
+    puts("PASS: nearby RW heap hints stay writable data; explicit executable requests retain the JIT path");
+    reset(true);
     assert(mmap(NULL,unity,0,MAP_PRIVATE|MAP_ANON,-1,0)==MAP_FAILED && errno==ENOMEM);
     calls=0;
-    void *p=b_mmap(NULL,unity,0,0x22,-1,0);
+    p=b_mmap(NULL,unity,0,0x22,-1,0);
     if (p==MAP_FAILED) { puts("FAIL: Unity's exact reservation remains blocked by the unused 4 GiB cage"); return 1; }
     assert(p==(void *)START && !g_compressed_heap && calls==2 && unmaps==1);
     assert(last_size==unity && last_prot==PROT_NONE && last_flags==(MAP_PRIVATE|MAP_ANON));

@@ -1270,17 +1270,8 @@ static size_t phantom_clamp(uintptr_t a, size_t l)
     return l;
 }
 
-/* Whether only the JIT region can execute here: the phone (iOS), or a Mac told to behave like one (TL_PHONE_JIT=1). */
-static bool phone_jit(void)
-{
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    return true;
-#else
-    static int on = -1;
-    if (on < 0) on = getenv("TL_PHONE_JIT") ? 1 : 0;
-    return on;
-#endif
-}
+/* Whether only the JIT region can execute is irrelevant to a data mapping:
+ * an address hint is a placement preference, never a request for execution. */
 /* File mappings at an offset Android allows (4 KiB pages) but this host does not (16 KiB): mapped from the host page below the
  * offset, the guest given the address its offset lands on. munmap gets back what was really mapped. */
 static struct { uintptr_t guest, host; size_t len; } g_shifted[64];
@@ -1350,21 +1341,12 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
             return rx;
         }
     }
-    /* A JIT's code memory where only the JIT region can execute (a phone: iOS 26+ lets nothing else run): LuaJIT maps it near its
-     * own code with a hint, writes the machine code, then makes it executable with mprotect -- which on a phone "succeeds" and
-     * then faults. An anonymous, code-sized, writable mapping hinted near the region comes from the region instead: its stores
-     * go through the writable view (code-write emulation), and mprotect there is a yes. TL_PHONE_JIT=1 does this on a Mac too. */
-    if (addr && !(prot & PROT_EXEC) && (prot & PROT_WRITE) && (flags & 0x20) && !(flags & 0x10) && len <= (32u << 20)
-        && tl_codewrite_enabled() && phone_jit() && tl_xmem_near(addr, 256u << 20)) {
-        uint8_t *rx, *rw;
-        size_t n = (len + TL_XMEM_PAGE - 1) & ~(size_t)(TL_XMEM_PAGE - 1);
-        if (tl_xmem_alloc(n, &rx, &rw)) {
-            memset(rw, 0, n);
-            tl_note_once("a JIT's code memory (mmap hinted near the code) comes from the JIT region");
-            mm_trace("mmap-jit", rx, len, prot, flags);
-            return rx;
-        }
-    }
+    /* Do not infer JIT intent from a nearby address hint. Boehm/IL2CPP uses
+     * the end of its previous heap as a hint for RW data. Returning RX memory
+     * here made every managed store fault, made read(2) into managed buffers
+     * fail, and made GC's later MAP_FIXED/PROT_NONE decommit fail with EACCES.
+     * Only explicit PROT_EXEC requests use the executable pool above. A later
+     * mprotect request must succeed or fail according to the real host policy. */
     int df = flags & 0x3;                                   /* MAP_SHARED / MAP_PRIVATE */
     if (flags & 0x10)   df |= MAP_FIXED;
     if (flags & 0x20)   df |= MAP_ANON;

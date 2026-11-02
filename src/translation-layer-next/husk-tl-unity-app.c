@@ -26,6 +26,7 @@
 #include "husk-tl-godot.h"
 #include "husk-tl-unity.h"
 #include "husk-tl-audio.h"
+#include "husk-tl-codewrite.h"
 #include "husk-tl-geode.h"
 
 /* Geode for the next cocos2d-x launch: its release zip and its launcher's APK (husk-tl-geode.c). Empty: off. */
@@ -167,6 +168,7 @@ static void *heartbeat_thread(void *arg)
     (void)arg;
     pthread_setname_np("husk-unity-hb");
     unsigned long last = 0;
+    long last_stores = 0;
     for (int tick = 0;; tick++) {
         if (tick < 40) usleep(500000); else sleep(3);          /* twice a second for the first twenty seconds */
         unsigned long f = engine_frames();
@@ -177,6 +179,9 @@ static void *heartbeat_thread(void *arg)
         tl_log_line("unity: alive: %lu frames (+%lu)", f, f - last);
 #endif
         last = f;
+        long stores=tl_codewrite_count();
+        tl_log_line("unity: emulated code stores=%ld (+%ld)",stores,stores-last_stores);
+        last_stores=stores;
         { extern volatile struct { uint64_t count, x21, impl, mask; } tl_va_clobber;
           static uint64_t seen;
           if (tl_va_clobber.count != seen) {

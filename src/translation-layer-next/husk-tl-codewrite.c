@@ -23,6 +23,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <sys/ucontext.h>
 
@@ -32,10 +33,11 @@
 
 static volatile bool g_on;
 static struct sigaction g_prev_bus, g_prev_segv;
-static volatile long g_emulated;
+_Static_assert(ATOMIC_LONG_LOCK_FREE == 2, "signal counters must be lock-free");
+static atomic_long g_emulated;
 
 bool tl_codewrite_enabled(void) { return g_on; }
-long tl_codewrite_count(void) { return g_emulated; }
+long tl_codewrite_count(void) { return atomic_load_explicit(&g_emulated,memory_order_relaxed); }
 
 static int64_t sext(uint64_t v, int bits) { return (int64_t)(v << (64 - bits)) >> (64 - bits); }
 
@@ -200,12 +202,12 @@ static void on_fault(int sig, siginfo_t *info, void *uc)
         void *exec = tl_ld_aot_exec((const void *)(uintptr_t)u->uc_mcontext->__ss.__pc);
         if (exec) {
             u->uc_mcontext->__ss.__pc = (uint64_t)(uintptr_t)exec;
-            g_emulated++;
+            atomic_fetch_add_explicit(&g_emulated,1,memory_order_relaxed);
             return;
         }
         if (info && (tl_xmem_is_rx(info->si_addr) || tl_ld_aot_writable(info->si_addr, 1)) && emulate(u->uc_mcontext)) {
             u->uc_mcontext->__ss.__pc += 4;
-            g_emulated++;
+            atomic_fetch_add_explicit(&g_emulated,1,memory_order_relaxed);
             return;
         }
     }
