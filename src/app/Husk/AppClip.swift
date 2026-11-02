@@ -11,7 +11,7 @@ import UIKit
 /// a small HTTP server on this iPhone (127.0.0.1) and opened in Safari's in-app view, which hands it to Settings to install.
 @MainActor
 enum AppClip {
-    static let scheme = "husk"
+    static let scheme = HuskIdentity.urlScheme
     static let host = "open_app"
 
     /// The link the clip opens.

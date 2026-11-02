@@ -4,7 +4,7 @@ import Foundation
 
 @MainActor enum GameLink {
     static func handle(_ url: URL) -> Bool {
-        guard url.scheme == "husk", url.host == "game" || url.host == "app" else { return false }
+        guard url.scheme == HuskIdentity.urlScheme, url.host == "game" || url.host == "app" else { return false }
         let id = url.lastPathComponent
         guard !id.isEmpty, id != "/" else { return true }
         let router = Router.shared

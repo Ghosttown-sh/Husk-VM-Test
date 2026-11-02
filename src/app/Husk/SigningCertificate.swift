@@ -23,7 +23,7 @@ final class SigningCertificate: ObservableObject {
     @Published var lastError: String?
 
     private static let service = "com.husk.signing"
-    private static let callbackScheme = "husk"
+    private static let callbackScheme = HuskIdentity.urlScheme
     private static let callbackHost = "certificate"
 
     private init() { info = Self.loadStored().flatMap { Self.open($0.p12, $0.password)?.info } }

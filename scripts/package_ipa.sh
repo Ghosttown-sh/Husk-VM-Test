@@ -62,10 +62,15 @@ else
 fi
 
 echo "==> building"
+BUILD_SETTINGS=()
+if [ "${HUSK_TEST_BUILD:-0}" = 1 ]; then
+    BUILD_SETTINGS+=("HUSK_BUNDLE_IDENTIFIER=com.husk.vmtest"
+                     "HUSK_DISPLAY_NAME=Husk VM Test" "HUSK_URL_SCHEME=husk-vmtest")
+fi
 xcodebuild -project "$HUSK_ROOT/src/app/Husk.xcodeproj" -scheme Husk \
     -sdk iphoneos -configuration Release -derivedDataPath "$DD" \
     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-    build 2>&1 | tee "$DD/build.log" | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+    ${BUILD_SETTINGS[@]+"${BUILD_SETTINGS[@]}"} build 2>&1 | tee "$DD/build.log" | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
 
 # A failed build used to sail straight past this: the previous .app is still in
 # DerivedData, so validation and packaging both succeed and produce an IPA of

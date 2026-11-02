@@ -452,7 +452,7 @@ final class JITCoordinator: ObservableObject {
 enum LocalDevVPN {
     static let appStore = URL(string: "https://apps.apple.com/us/app/localdevvpn/id6755608044")!
     /// `enable` connects the VPN; `scheme` has LocalDevVPN return to Husk afterwards.
-    static let connect = URL(string: "localdevvpn://enable?scheme=husk")!
+    static let connect = URL(string: "localdevvpn://enable?scheme=\(HuskIdentity.urlScheme)")!
 
     static var isInstalled: Bool { UIApplication.shared.canOpenURL(URL(string: "localdevvpn://")!) }
     static var actionTitle: String { isInstalled ? "Connect LocalDevVPN" : "Get LocalDevVPN" }

@@ -14,6 +14,8 @@ settings:
     # identifier has to sit under the app's. Change this, not
     # PRODUCT_BUNDLE_IDENTIFIER.
     HUSK_BUNDLE_IDENTIFIER: com.husk.app
+    HUSK_DISPLAY_NAME: Husk
+    HUSK_URL_SCHEME: husk
     # The app's entitlements only. A signed development build has to drop
     # dynamic-codesigning, which Apple will not provision; overriding this
     # rather than CODE_SIGN_ENTITLEMENTS keeps the override off the helper.
