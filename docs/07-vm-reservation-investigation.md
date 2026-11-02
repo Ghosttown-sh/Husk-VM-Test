@@ -5,6 +5,9 @@ macOS regression tests passed, including real Darwin mappings with both 4 KiB
 and 16 KiB host pages. A real ARM64 iOS device IPA was built successfully on
 Apple Silicon with Xcode 27.1, structurally validated and signature-verified
 on the Mac, then downloaded and independently revalidated on Windows.
+The user's 19:44:49Z physical iPad run confirms that the memory fix succeeded:
+the exact 0x1fffc000 retry returned 0x7000000000 with errno=0. Unity reached
+five graphics swaps, then crashed during resource/IL2CPP initialization.
 Complete Unity startup and physical iPad editor/touch/save remain unverified.
 
 Successful build: [Actions run 41507991694](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41507991694).
@@ -87,12 +90,11 @@ separated 256 MiB holes. The exact Unity request fails in unmodified
 `9345aab`, and succeeds with the patch. The range sizes are test fixtures,
 not new limits in the app.
 
-The supplied iPad log lacks the process VM map and full crash registers.
-Consequently this is a confirmed, reproducible address-space ownership defect
-and a supported candidate cause for that device failure, **not proof that it
-is the only cause on the iPad**. The patched build logs cage retention,
-reclamation, the retry result, and more complete failed-call arguments so
-the device test can distinguish it from genuine remaining exhaustion.
+The initial log lacked the process VM map. The subsequent physical iPad run
+of 10a4cd0-dirty now confirms this recovery on the user's device: releasing
+the unclaimed cage made the identical failed reservation succeed. This is
+not proof that every possible ENOMEM has this cause, nor that Unity startup
+is complete; the next failure is described below.
 
 ## Primary fix and compatibility boundaries
 
@@ -258,19 +260,57 @@ separate app container may need the existing pairing record imported once,
 and JIT must attach to that test process. This is not a request to recreate
 the already-working pairing/VPN setup.
 
+## Follow-up: installed APK naming and resource initialization
+
+The user's physical run logged `Failed to read assets/bin/Data/unity_app_guid`,
+then failure to open the extracted `il2cpp/Metadata/global-metadata.dat`.
+Both inputs exist in the original APK: the GUID is 36 bytes and the metadata
+is 11,016,632 bytes; ZIP decompression and CRC validation pass locally.
+The native PC is in libil2cpp at 0x1940b74: `ldrb w8, [x0, #0x135]` with
+x0=0. The caller at 0x191ccc8 explains LR=0x191cccc. This is a null object
+access after initialization failed, distinct from the old 0x50 allocator fault.
+
+Husk exposes the imported filename directly through Native.apkPath() to
+ApplicationInfo.sourceDir/publicSourceDir and getPackageCodePath(). Here that
+filename ends in `.aPK`. Android's installed package naming is different;
+[ApplicationInfo.sourceDir](https://developer.android.com/reference/android/content/pm/ApplicationInfo#sourceDir)
+identifies the installed base APK, and the
+[AOSP installer](https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/pm/PackageInstallerSession.java)
+stages the base package as base.apk.
+
+The APK's actual Unity ARM64 parser at 0x6e2d38 uses a table containing
+`.apk/` and calls the case-sensitive search at 0x4b0050. Its archive lookup
+caller at 0x6e4418 depends on successful splitting of archive and entry paths.
+`tests/translation-layer/unity_apk_path.py` executes those unchanged original
+instructions under Unicorn: the imported `.aPK/assets/...` fails; `.apk/assets/...`
+and `.husk-package/base.apk/assets/...` both split correctly. Spaces alone
+do not fail. This confirms a compatibility defect matching the resource
+failure, but the full resource initialization path must still be retested
+on the iPad; the routine test is not full Unity execution.
+
+The Java app driver now exposes `<data>/.husk-package/base.apk`, a hard link
+to the original package. It preserves the exact APK bytes and its signature,
+does not duplicate 128 MiB of content, and keeps the installed spelling even
+after realpath(). Repeated launches reuse the same inode. A replaced source
+updates only the managed alias atomically. Invalid paths and unexpected
+symlinks fail explicitly; the app does not proceed with a truncated path.
+The original APK, game data, loader and JIT behavior are preserved.
+
+`run_apk_path.sh` tests the production helper's real filesystem operations:
+mixed-case names, preserved bytes/inodes, canonical paths, repeat launch,
+source replacement, undersized output, missing/nonregular sources, and
+conflicting symlinks. The Mac IPA pipeline and Linux regression workflow
+run it. No Java framework changes or game modifications are needed.
+
 ## Remaining actions, in order
 
-1. Install the validated IPA alongside Husk using the existing Windows
-   sideloading method (or the linked official AltStore Windows path).
-   Authentication and cloud compilation are complete; no further GitHub
-   login or routine work permission is needed. Do not uninstall original Husk.
-2. Import a copy of the original APK into the separate **Husk VM Test** app.
-   Enable the existing working JIT route for the separate test process and
-   launch the original APK through Translation Layer / java.
-3. Capture the launch log, including any `mm: holding unused...`,
-   `mm: released unused...`, retry result and complete PC/LR/register lines.
-   If no cage was reclaimed, investigate the actual device VM map before
-   changing more allocation behavior.
+1. Build and validate the follow-up IPA; update the existing **Husk VM Test**
+   through Sideloadly with the same signing account and identifier. Preserve
+   its installed data and pairing; do not uninstall either Husk app.
+2. Launch the already-imported original APK through Translation Layer / java
+   using the existing working JIT route. No repeated pairing setup is needed.
+3. Capture the installed-base-APK diagnostic, GUID/metadata initialization,
+   and any remaining crash PC/LR/registers. This is not a QEMU guest boot.
 4. Confirm the original editor appears; tap controls, create/edit a small
    throwaway chart, save it, close/reopen the editor, and verify persistence.
    Record each result separately. Only then can the end-to-end goal be

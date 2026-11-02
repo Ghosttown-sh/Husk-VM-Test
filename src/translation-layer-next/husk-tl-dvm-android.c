@@ -10,9 +10,11 @@
 #include "husk-tl-dvm-javaapp.h"
 #include "husk-tl-dvm-gl.h"
 #include "husk-tl-aosp.h"
+#include "husk-tl-apk-path.h"
 #include "husk-tl-dvm.h"
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -1169,7 +1171,6 @@ bool tl_javaapp_start(const tl_javaapp_config *cfg)
     /* stores into a library's executable view (data sharing a page with its code, as Unity's does) go through the writable one */
     { void tl_codewrite_enable(void); tl_codewrite_enable(); }
     A.cfg = *cfg;
-    snprintf(A.apk, sizeof(A.apk), "%s", cfg->apk_path);
     /* JIT-less mode: LuaJIT (LÖVE games) runs its interpreter, as the SDL driver already has it do */
     if (getenv("TL_NO_XMEM")) { void tl_luajit_interpreter_only(void); tl_luajit_interpreter_only(); }
     /* an app whose manifest needs OpenGL ES 3.1 or 3.2 is told the driver has it (ANGLE over Metal stops at 3.0; the shim writes
@@ -1181,6 +1182,14 @@ bool tl_javaapp_start(const tl_javaapp_config *cfg)
     snprintf(A.fwres, sizeof(A.fwres), "%s", cfg->framework_res ? cfg->framework_res : "");
     for (int i = 0; i < 4; i++) A.insets[i] = cfg->insets[i];
     mkdir(A.data, 0755); mkdir(A.ext, 0755);
+    /* Android installs a base APK as base.apk, regardless of the download's
+     * name. Unity's native archive parser requires a literal ".apk/"; exposing
+     * an imported ".aPK" as sourceDir makes its packaged assets unreadable. */
+    if (!tl_apk_install_path(cfg->apk_path, A.data, A.apk, sizeof(A.apk))) {
+        tl_log_line("javaapp: cannot prepare installed base.apk: %s", strerror(errno));
+        return false;
+    }
+    tl_log_line("javaapp: installed base APK: %s", A.apk);
     if (!tl_javaapp_manifest(cfg->apk_path, A.pkg, sizeof(A.pkg), A.activity, sizeof(A.activity), A.application, sizeof(A.application))) {
         tl_log_line("javaapp: the manifest names no launcher activity");
         return false;

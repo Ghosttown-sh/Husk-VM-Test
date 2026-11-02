@@ -19,6 +19,7 @@ jobs:
           set -o pipefail
           mkdir -p build/evidence
           python3 tests/translation-layer/run_vm_pressure.py --cc clang 2>&1 | tee build/evidence/vm-policy-linux.log
+          CC=clang sh tests/translation-layer/run_apk_path.sh 2>&1 | tee build/evidence/apk-path-linux.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -54,6 +54,7 @@ def validate(path,commit):
         executables=[root+info['CFBundleExecutable']]
         app_code=z.read(executables[0])
         assert b'mm: released unused 4 GiB compressed heap; retry' in app_code, 'Main executable lacks the VM recovery implementation diagnostic'
+        assert b'javaapp: installed base APK: %s' in app_code, 'Main executable lacks installed APK path normalization'
         assert b'Could not prepare RAM for the Android snapshot. See the Husk log.' in app_code, 'Main executable lacks the corrected snapshot RAM failure path'
         required=['Frameworks/libqemu-aarch64-softmmu.dylib','Frameworks/libANGLE-shared.dylib',
                   'Frameworks/libhuskps4.dylib','Frameworks/libFilePickerFix.dylib',
