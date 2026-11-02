@@ -1079,7 +1079,7 @@ static void anon_add(void *addr, size_t len)
     pthread_mutex_unlock(&g_anon_lock);
 }
 
-/* Mimalloc reserves a large anonymous range and munmaps the unused ends to align. Keep the list matching that. */
+/* Unity reserves a large anonymous range and munmaps the unused ends to align. Keep the list matching that. */
 /* Caller holds g_anon_lock across the host unmap and this bookkeeping. */
 static void anon_remove_locked(uintptr_t addr, size_t len)
 {
@@ -1098,6 +1098,27 @@ static void anon_remove_locked(uintptr_t addr, size_t len)
             g_anon[i] = g_anon[--g_nanon]; i--;
         }
     }
+}
+
+void *tl_bionic_reserve_aligned(size_t size, size_t alignment)
+{
+    const char *limit = getenv("TL_MM_MAX_GIB");
+    if (limit && size > ((size_t)atoi(limit) << 30)) { errno = ENOMEM; return MAP_FAILED; }
+    void *p = tl_vm_reserve_aligned(size, alignment);
+    if (p != MAP_FAILED) {
+        pthread_mutex_lock(&g_anon_lock);
+        if (g_nanon == MAX_ANON) {
+            pthread_mutex_unlock(&g_anon_lock);
+            munmap(p, size);
+            errno = ENOMEM;
+            return MAP_FAILED;
+        }
+        g_anon[g_nanon].addr = (uintptr_t)p;
+        g_anon[g_nanon++].len = size;
+        pthread_mutex_unlock(&g_anon_lock);
+        tl_log_line("mm: aligned reservation addr=%p len=%#zx alignment=%#zx", p, size, alignment);
+    }
+    return p;
 }
 
 static void anon_zap(uintptr_t addr, size_t len)

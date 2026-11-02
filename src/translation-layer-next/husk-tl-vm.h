@@ -8,6 +8,9 @@
 /* Real, initially inaccessible anonymous memory. Never overwrites a mapping.
  * Used only after a non-fixed private anonymous reservation returns ENOMEM. */
 void *tl_vm_reserve_gap(size_t size);
+void *tl_vm_reserve_aligned(size_t size, size_t alignment);
+/* Adds successful native aligned reservations to the guest mmap ledger. */
+void *tl_bionic_reserve_aligned(size_t size, size_t alignment);
 /* Ask Darwin to delegate padding VA through mach_vm_range_create. Only the
  * kernel-reported malloc ranges are eligible; refusal remains ENOMEM. */
 void *tl_vm_reserve_delegated(size_t size);

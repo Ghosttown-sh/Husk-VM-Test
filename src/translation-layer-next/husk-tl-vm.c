@@ -28,7 +28,7 @@ static int vm_info(task_vm_info_data_t *info)
  * atomic no-replace operation: even a concurrent allocator cannot be clobbered.
  * Kernel address-range/protection checks still apply. No guessed addresses,
  * fictitious mappings, precommitted RAM, or process-limit changes are used. */
-void *tl_vm_reserve_gap(size_t size)
+static void *reserve_gap(size_t size, size_t alignment)
 {
     const vm_size_t mask = (vm_size_t)getpagesize() - 1;
     if (!size || size > SIZE_MAX - mask) { errno = ENOMEM; return MAP_FAILED; }
@@ -40,8 +40,8 @@ void *tl_vm_reserve_gap(size_t size)
     vm_address_t limit = info.max_address;
     unsigned attempts = 0;
     vm_size_t largest_gap = 0;
-    kern_return_t last = KERN_NO_SPACE;
-    while (cursor < limit && bytes <= limit - cursor) {
+    kern_return_t last = KERN_SUCCESS, enumeration = KERN_SUCCESS;
+    while (cursor < limit) {
         vm_address_t next = cursor;
         vm_size_t span = 0;
         vm_region_basic_info_data_64_t region;
@@ -50,11 +50,14 @@ void *tl_vm_reserve_gap(size_t size)
         kern_return_t kr = vm_region_64(mach_task_self(), &next, &span,
             VM_REGION_BASIC_INFO_64, (vm_region_info_t)&region, &count, &object);
         if (object != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object);
+        enumeration = kr;
         if (kr != KERN_SUCCESS && kr != KERN_INVALID_ADDRESS) break;
         vm_address_t end = kr == KERN_SUCCESS && next < limit ? next : limit;
         if (end > cursor && end - cursor > largest_gap) largest_gap = end - cursor;
-        if (end > cursor && bytes <= end - cursor) {
-            vm_address_t at = cursor;
+        vm_address_t aligned = cursor <= UINTPTR_MAX - (alignment - 1)
+            ? (cursor + alignment - 1) & ~(vm_address_t)(alignment - 1) : UINTPTR_MAX;
+        if (end > aligned && bytes <= end - aligned) {
+            vm_address_t at = aligned;
             last = vm_map(mach_task_self(), &at, bytes, 0, VM_FLAGS_FIXED,
                 MACH_PORT_NULL, 0, FALSE, VM_PROT_NONE, VM_PROT_ALL, VM_INHERIT_COPY);
             attempts++;
@@ -79,8 +82,17 @@ void *tl_vm_reserve_gap(size_t size)
         if (!span || next >= limit || next > UINTPTR_MAX - span || next + span <= cursor) break;
         cursor = next + span;
     }
-    tl_log_line("mm: no reservable VM gap len=%#zx largest_gap=%#zx attempts=%u mach_error=%d bounds=%#llx..%#llx",
-        size, (size_t)largest_gap, attempts, last, (unsigned long long)info.min_address, (unsigned long long)limit);
+    tl_log_line("mm: no reservable VM gap len=%#zx alignment=%#zx largest_gap=%#zx attempts=%u last_attempt_error=%d enumeration=%d bounds=%#llx..%#llx",
+        size, alignment, (size_t)largest_gap, attempts, last, enumeration,
+        (unsigned long long)info.min_address, (unsigned long long)limit);
+    errno = ENOMEM;
+    return MAP_FAILED;
+}
+
+void *tl_vm_reserve_gap(size_t size)
+{
+    void *p = reserve_gap(size, (size_t)getpagesize());
+    if (p != MAP_FAILED) return p;
 #ifndef TL_VM_NO_DELEGATED_RANGES
     /* iOS also reserves inaccessible padding between its allocation ranges.
      * It is NOT a free gap: only mach_vm_range_create may delegate it to us. */
@@ -88,6 +100,23 @@ void *tl_vm_reserve_gap(size_t size)
 #endif
     errno = ENOMEM;
     return MAP_FAILED;
+}
+
+/* Native aligned reservation: the caller requests size bytes, not the larger
+ * size+alignment-page temporary mapping used by POSIX overallocate-and-trim.
+ * Both paths reserve the ENTIRE requested size with real PROT_NONE pages.
+ * Never use this to return fewer bytes from Android mmap. */
+void *tl_vm_reserve_aligned(size_t size, size_t alignment)
+{
+    size_t page = (size_t)getpagesize();
+    if (!size || size % page || alignment < page || (alignment & (alignment - 1))) {
+        errno = EINVAL; return MAP_FAILED;
+    }
+    vm_address_t at = 0;
+    kern_return_t kr = vm_map(mach_task_self(), &at, size, alignment - 1,
+        VM_FLAGS_ANYWHERE, MACH_PORT_NULL, 0, FALSE, VM_PROT_NONE, VM_PROT_ALL, VM_INHERIT_COPY);
+    if (kr == KERN_SUCCESS) return (void *)at;
+    return reserve_gap(size, alignment);
 }
 
 void tl_vm_log_state(const char *reason)

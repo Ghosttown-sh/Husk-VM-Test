@@ -56,6 +56,7 @@ def validate(path,commit):
         assert b'mm: released unused 4 GiB compressed heap; retry' in app_code, 'Main executable lacks the VM recovery implementation diagnostic'
         assert b'javaapp: installed base APK: %s' in app_code, 'Main executable lacks installed APK path normalization'
         assert b'mm: reserved real VM gap addr=' in app_code, 'Main executable lacks real VM gap reservation'
+        assert b'unity-vm: verified Baselib allocator uses native aligned reservations' in app_code, 'Main executable lacks verified native aligned allocator bridge'
         assert b'mm: delegated VM range addr=' in app_code, 'Main executable lacks kernel-approved VM range delegation'
         assert b'mm: state[%s] footprint=' in app_code, 'Main executable lacks VM footprint diagnostics'
         assert b'Could not prepare RAM for the Android snapshot. See the Husk log.' in app_code, 'Main executable lacks the corrected snapshot RAM failure path'

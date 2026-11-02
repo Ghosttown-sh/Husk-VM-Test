@@ -23,6 +23,8 @@
 #include "husk-tl-arm32.h"
 #include "husk-tl-xmem.h"
 #include "husk-tl-codewrite.h"
+#include "husk-tl-unity-vm.h"
+#include <CommonCrypto/CommonDigest.h>
 
 /* The project's log sink, and the bionic shim's surface. */
 void  tl_log_line(const char *fmt, ...);
@@ -2647,12 +2649,35 @@ static bool island(tl_lib *L)
 
 static void patch_library(tl_lib *L, size_t *t, size_t *a, size_t *ad, size_t *sv)
 {
+    /* Stripped Unity 6000.0.10f1c1 Baselib: offsets alone are NOT sufficient.
+     * Match all 1544 original bytes of the allocator and its argument validator
+     * before ordinary instruction rewriting. A different build stays untouched.
+     * No engine or game bytes are embedded here, only their SHA-256 digest. */
+    const uint64_t va = 0xf000ac, end = 0xf006b4;
+    const uint8_t digest[32] = {0x6f,0x95,0xa6,0x9f,0xa9,0x47,0xe2,0x1e,
+        0xff,0xe0,0xe7,0xc1,0xe8,0x63,0x4b,0xde,0xb3,0x5f,0x6b,0x3a,
+        0x13,0x95,0x27,0xd4,0xa9,0x96,0x97,0xf4,0xca,0x1b,0xfe,0x05};
+    uint8_t actual[CC_SHA256_DIGEST_LENGTH];
+    bool aligned_unity = false;
+#if defined(__aarch64__)
+    if (!L->build && !L->aot && !L->arm32 && va >= L->base_vaddr &&
+        end - L->base_vaddr <= L->npages * PAGE && in_code(L, va) && in_code(L, end - 1)) {
+        CC_SHA256(L->rw + va - L->base_vaddr, (CC_LONG)(end - va), actual);
+        aligned_unity = !memcmp(actual, digest, sizeof(digest));
+    }
+#endif
     /* The relocation table is dead now that the image is relocated. Its tail becomes a second pool of stubs, for the
      * sites that are out of branch range of the stub pages after a very large image. */
     if (island(L)) memset(L->isl_rw, 0, L->isl_cap);
     mono_aot_code_only(L);
     patch_image(L, t, a, ad, sv);
     skip_boringssl_selfcheck(L);
+    if (aligned_unity) {
+        uint8_t *site_rx = L->rx + va - L->base_vaddr, *stub_rx, *stub_rw;
+        if (stub_slot(L, site_rx, &stub_rx, &stub_rw) &&
+            tl_unity_vm_redirect(L->rw + va - L->base_vaddr, site_rx, stub_rw, stub_rx))
+            tl_log_line("unity-vm: verified Baselib allocator uses native aligned reservations (original fallback retained)");
+    }
 }
 
 /*
