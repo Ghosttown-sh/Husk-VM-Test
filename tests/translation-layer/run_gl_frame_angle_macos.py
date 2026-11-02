@@ -17,11 +17,11 @@ root = Path(__file__).resolve().parents[2]
 assert platform.system() == 'Darwin' and platform.machine() == 'arm64'
 out = root / 'build/angle-host-test'
 out.mkdir(parents=True, exist_ok=True)
-name = 'cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_macosarm64_minimal.tar.bz2'
+name = 'cef_binary_150.0.21+ga61e9a5+chromium-150.0.7871.255_macosarm64_minimal.tar.bz2'
 archive = out / name
 if not archive.exists():
     urllib.request.urlretrieve('https://cef-builds.spotifycdn.com/' + name, archive)
-assert hashlib.sha1(archive.read_bytes()).hexdigest() == 'bcdd1877edb300b0fb91d8f71c0b14aae256cd0f'
+assert hashlib.sha1(archive.read_bytes()).hexdigest() == '4057b6558bc83c93eb955b6983e00ef6361a0ffc'
 found = set()
 with tarfile.open(archive) as tar:
     for member in tar:
