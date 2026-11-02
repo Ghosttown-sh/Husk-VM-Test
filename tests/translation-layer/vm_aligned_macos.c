@@ -51,13 +51,20 @@ static tl_unity_pages fallback(size_t page,size_t count,size_t alignment,uint32_
     return (tl_unity_pages){NULL,0,0};
 }
 static void check_none(uintptr_t p, size_t size) {
-    vm_address_t a=p; vm_size_t n=0;
-    vm_region_basic_info_data_64_t info;
-    mach_msg_type_number_t c=VM_REGION_BASIC_INFO_COUNT_64;
-    mach_port_t obj=MACH_PORT_NULL;
-    assert(vm_region_64(mach_task_self(),&a,&n,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&info,&c,&obj)==KERN_SUCCESS);
-    if(obj) mach_port_deallocate(mach_task_self(),obj);
-    assert(a<=p && n>=size && info.protection==VM_PROT_NONE);
+    uintptr_t end=p+size;
+    while(p<end) {
+        vm_address_t a=p; vm_size_t n=0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t c=VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t obj=MACH_PORT_NULL;
+        assert(vm_region_64(mach_task_self(),&a,&n,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&info,&c,&obj)==KERN_SUCCESS);
+        if(obj) mach_port_deallocate(mach_task_self(),obj);
+        if(!(a<=p && n>p-a && info.protection==VM_PROT_NONE))
+            fprintf(stderr,"range check at %#llx: entry %#llx+%#llx protection %d\n",
+                (unsigned long long)p,(unsigned long long)a,(unsigned long long)n,info.protection);
+        assert(a<=p && n>p-a && info.protection==VM_PROT_NONE);
+        p=a+n;
+    }
 }
 int main(int argc, char **argv) {
     size_t page=getpagesize();
