@@ -50,15 +50,31 @@ diagnostic switch for comparing the original path.
 - Real Windows ANGLE/NVIDIA D3D11: independent contexts, 30 transfers each at
   2420 x 1668 with zero and four requested MSAA samples, exact pixel checks and
   guest binding/error checks. This backend used the real `glFinish` fallback.
-- The Mac pipeline runs the same production bridge against an official pinned
-  CEF ANGLE Metal host build, separately from the iOS ANGLE shipped in the IPA.
-  A successful pipeline is required before delivery; native tests cannot certify
-  performance on the user's iPad or the complete editor workflow.
-- Previous VM regressions and IPA identity/architecture validation remain gates.
+- ARM64 macOS 27.0.1 / Apple Paravirtual Metal GPU: both zero and four MSAA
+  configurations passed the same transfers and compositor shader draws, using
+  real EGL fences/server waits. Each also passed 30 queued reuse snapshots
+  without per-frame CPU reads, plus asymmetric corner/orientation/alpha checks.
+  This uses an official pinned CEF host ANGLE, separately from the iOS ANGLE
+  shipped in the IPA; it is not an iPad frame-rate measurement.
+- Previous VM regressions passed on a real 16 KiB Darwin host, including 144
+  aligned allocations, exhaustion/recovery, partial unmap/reuse and JIT sentinels.
+  Two older test fixtures now ask the kernel for their isolated address windows
+  instead of assuming a fixed address admitted by every runner. Production VM
+  code is unchanged by this performance milestone.
+- [Successful build 41534592274](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41534592274)
+  built `0f4869e-dirty`: 9 ARM64 device Mach-O binaries, iPad device family,
+  isolated test bundle and extensions, resources, ZIP CRC and strict signing
+  verification passed. The downloaded IPA was revalidated on Windows.
+  SHA256: `e8a6413826b3a84a077198486299e8a2588f4306a64b04bc00d2c97c8ccd0b3c`.
 
 The real GPU regression performs a one-pixel CPU read solely to verify output.
 That read is not present in the production GPU compositor. Reported host timing
 includes this test overhead and must not be represented as iPad performance.
+During development, a direct CPU read of an imported private Metal texture
+crashed inside the cloud host GPU driver. The final test samples that texture
+through the actual compositor shader and verifies the consumer-owned output;
+that path passes. The production GPU bridge never reads the imported texture
+back to CPU memory. Failed candidates were not delivered.
 
 ## References
 
