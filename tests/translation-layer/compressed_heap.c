@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Include the production allocator to exercise its reservation/trim seam. */
-#include "../../src/translation-layer-next/husk-tl-bionic-io.c"
+#include "production_vm.inc"
 #include <assert.h>
 void tl_log_line(const char *fmt, ...) { (void)fmt; }
 int main(int argc, char **argv) {
