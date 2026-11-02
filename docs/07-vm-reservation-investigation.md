@@ -1,10 +1,18 @@
 # Visual Maimai Mobile: VM investigation and test build
 
-Status on 2026-11-02: source fixes implemented and local Windows tests passed.
-The QEMU RAM-plan Swift source has also been compiled and executed successfully
-by Swift 6.2.4 on a public Linux compiler service without a login.
-No modified IPA has been compiled yet. The macOS integration tests, complete
-Unity startup, and physical iPad editor/touch/save checks remain unverified.
+Status on 2026-11-02: source fixes implemented; Windows, Linux CI and native
+macOS regression tests passed, including real Darwin mappings with both 4 KiB
+and 16 KiB host pages. A real ARM64 iOS device IPA was built successfully on
+Apple Silicon with Xcode 27.1, structurally validated and signature-verified
+on the Mac, then downloaded and independently revalidated on Windows.
+Complete Unity startup and physical iPad editor/touch/save remain unverified.
+
+Successful build: [Actions run 41507991694](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41507991694).
+The source revision is `10a4cd0e44a538958591d827217877d5e4df874e`; the IPA's
+build stamp is `10a4cd0-dirty` (the build regenerates tracked Xcode project
+and dependency-notice files). Later documentation commits do not change this
+IPA's executable. File: `Husk-VM-Test.ipa`, 142,243,910 bytes. SHA256:
+`e0720ca4c119a6ba29279b2eb229d68f5724e5ea7819020e2d8900f96806d92b`.
 
 ## Reproducible source and inputs
 
@@ -148,7 +156,7 @@ No Android snapshot download is required for this work.
 
 ## Verification ledger
 
-| Check | Result on Windows |
+| Check | Result / execution host |
 | --- | --- |
 | Original `9345aab` C functions under bounded VM test | Expected failure reproduced |
 | Patched production reservation + mmap functions compiled with MSVC | Passed |
@@ -161,10 +169,13 @@ No Android snapshot download is required for this work.
 | Edited Swift syntax, workflow YAML, shell syntax | Passed; not Swift compilation |
 | Dependency staging from checksum-verified official 3.3 IPA | Passed; 416 files staged |
 | Official dependency Mach-O targets, wrong-platform rejection, reject official IPA as test build | Passed |
-| Real Mach reservation/trim/protect/unmap integration | Written; requires macOS, not run |
-| Existing compressed-heap Darwin regression | Requires macOS, not run |
-| Swift `GuestRAMPlan` execution tests | Passed using actual Swift 6.2.4, Swift 5 language mode, Linux x86-64 via Compiler Explorer; Apple build remains untested |
-| Patched app compilation / IPA signatures | Not run; no macOS executor connected |
+| Portable production C policy regression on Linux CI | Passed, run 41505148094 |
+| Real Mach reservation/trim/protect/unmap integration | Passed on Intel macOS (4096-byte pages), run 41506268685, and Apple Silicon macOS (16384-byte pages), run 41507991694 |
+| Existing compressed-heap Darwin regression | Passed on Intel and Apple Silicon macOS |
+| Swift `GuestRAMPlan` execution tests | Passed with Swift 6.2.4 on Linux, Xcode 26.3 on Intel macOS and Xcode 27.1 on Apple Silicon |
+| Patched app and both extensions compiled | Passed, Xcode 27.1 / Swift 6.4 / ARM64 iOS device, run 41507991694 |
+| IPA ZIP/resources/identity/platform/patched-code validation | Passed on Mac and independently on Windows; 9 ARM64 device Mach-O binaries checked |
+| IPA code signatures | Passed `codesign --verify --deep --strict` on Mac; ad-hoc signatures still need installer re-signing |
 | Full Unity startup, editor UI, touch, edit/save/reopen on iPad | Not run |
 
 The remote Swift test sent only `GuestRAMPlan.swift` and its test source to
@@ -195,8 +206,10 @@ is an input dependency only; it is **not** a fixed output IPA.
 `scripts/build_vm_test.sh` is the complete, provider-independent entry point.
 It runs the native regressions, stages verified dependencies, compiles, then
 validates the IPA and its signatures before writing the final output. It can
-run on any Apple Silicon Mac with selected Xcode 26+, Python 3.11+, XcodeGen,
-qemu-img and Rust/rustup. It needs no GitHub login or Apple signing account:
+run on a Mac with selected Xcode 26+, Swift 6.4+, Python 3.11+, XcodeGen,
+qemu-img and Rust/rustup. Intel hosts cross-compile the app for ARM64 iOS;
+the native VM tests explicitly report the host's actual page size. The build
+script needs no GitHub login or Apple signing account:
 
 ```sh
 bash scripts/build_vm_test.sh
@@ -205,27 +218,30 @@ bash scripts/build_vm_test.sh
 The public upstream source and official dependency IPA can be downloaded
 without logging in. Set `HUSK_OFFICIAL_IPA` to an existing verified local copy
 to reuse it. The host/Xcode checks fail before building on unsupported hosts.
-Shell syntax and the Windows rejection path were checked; the Mac build
-itself remains unexecuted.
+Shell syntax, Windows rejection, all native Mac regression stages, dependency
+staging, ARM64 iOS pairing-library build, full app build and IPA packaging and
+validation have been exercised successfully.
 
-`.github/workflows/vm-test-ipa.yml` calls that same script in a manual Actions build
-on standard Apple Silicon `macos-15`, explicitly selecting Xcode 26.3 because
-the runner's default Xcode 16.4 is too old for Husk's iOS 26 APIs. The
-[runner inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md)
-lists that Xcode/SDK. An iOS device build can run on newer iPadOS; it need
-not be compiled against the exact device OS version.
+`.github/workflows/vm-test-ipa.yml` calls that script on a choice of standard
+public Mac runners. The `xcode-27` image supplies Xcode 27.1 / Swift 6.4.
+Older images select Xcode 26.3 and install the signed official Swift 6.4.2
+toolchain, checking its Swift Open Source installer identity before installing.
+This is required because the unchanged upstream StikJIT module interface was
+built by Swift 6.4. The compiler selection follows
+[Swift's documented custom-toolchain procedure](https://www.swift.org/install/macos/package_installer/).
+No framework interface is rewritten to hide the mismatch.
 
 The workflow refuses private repositories, uses read-only repository token
 permissions, and uploads an IPA only after tests, compilation, resource/ZIP/
 Mach-O validation, and signature verification pass. Standard hosted runners
 are [free for public repositories](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
-No paid runner or Apple signing secret is configured. It has **not been
-dispatched**. The user has authorized proceeding, but there is no authenticated
-GitHub session or connected Mac executor in this environment. Authorization
-is no longer the blocker; a usable build host/session is. GitHub is one way
-to obtain the Mac runner, not a dependency of the bug fix or build script.
+No paid runner or Apple signing secret is configured. The authenticated public
+fork is [Ghosttown-sh/Husk-VM-Test](https://github.com/Ghosttown-sh/Husk-VM-Test).
+Builds have been dispatched; their logs and downloadable evidence are in its
+Actions history. GitHub is the build host provider used here, not a dependency
+of the bug fix or the provider-independent build script.
 
-The result, if the build succeeds, is `Husk-VM-Test.ipa`, with app identifier
+The validated result is `Husk-VM-Test.ipa`, with app identifier
 `com.husk.vmtest`, display name **Husk VM Test**, extension IDs beneath that
 identifier, and URL scheme `husk-vmtest`. Defaults for ordinary builds remain
 `com.husk.app` / **Husk** / `husk`. VPN, certificate and game-link callbacks
@@ -244,23 +260,18 @@ the already-working pairing/VPN setup.
 
 ## Remaining actions, in order
 
-1. Provide access to an Apple Silicon Mac or complete the prepared official
-   GitHub CLI browser sign-in so the free public Actions runner can be used.
-   The user has already authorized the work; no further routine permission is
-   needed. There is no requirement to install a Codex GitHub plugin. Only
-   Husk source changes belong on the fork: no APK, Apple account secret or
-   pairing file should be uploaded.
-2. Run the prepared Darwin/Swift tests and compile. If any fail, fix and
-   rerun before offering an IPA. This is still outstanding engineering work,
-   not a claim that the workflow is already proven.
-3. After the validated IPA exists, install it alongside Husk from Windows.
+1. Install the validated IPA alongside Husk using the existing Windows
+   sideloading method (or the linked official AltStore Windows path).
+   Authentication and cloud compilation are complete; no further GitHub
+   login or routine work permission is needed. Do not uninstall original Husk.
+2. Import a copy of the original APK into the separate **Husk VM Test** app.
    Enable the existing working JIT route for the separate test process and
    launch the original APK through Translation Layer / java.
-4. Capture the launch log, including any `mm: holding unused...`,
+3. Capture the launch log, including any `mm: holding unused...`,
    `mm: released unused...`, retry result and complete PC/LR/register lines.
    If no cage was reclaimed, investigate the actual device VM map before
    changing more allocation behavior.
-5. Confirm the original editor appears; tap controls, create/edit a small
+4. Confirm the original editor appears; tap controls, create/edit a small
    throwaway chart, save it, close/reopen the editor, and verify persistence.
    Record each result separately. Only then can the end-to-end goal be
    marked achieved.
