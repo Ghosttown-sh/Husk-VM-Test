@@ -501,3 +501,39 @@ Primary sources: Apple's [range ABI](https://github.com/apple-oss-distributions/
 and [native regression examples](https://github.com/apple-oss-distributions/xnu/blob/main/tests/vm/vm_ranges.c).
 Public XNU is implementation evidence, not a claim that every detail of iPadOS
 27's private kernel is identical. API errors are logged for that reason.
+
+### Follow-up build and test evidence
+
+Run [41520853386](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41520853386)
+completed successfully on an ARM64 Mac with 16 KiB host pages. Its source is
+`f7126ab81d5ecaf1c8c7a4420e11147e0a7c5ed7`; the IPA reports `f7126ab-dirty`
+because packaging regenerates the Xcode project and notices. The resulting
+IPA is 142,249,210 bytes, SHA-256
+`71aae4dbf3fb7b8b938115edafd24dd27aa76a3203ea877c5f5bc671ec4f74ae`.
+Xcode compilation, strict deep code-signature verification, and a separate
+Windows inspection of all nine ARM64 iOS binaries, iPad support, bundle IDs,
+resources, new diagnostic markers and ZIP CRC passed. Sideloadly must still
+sign it for the user's device using the existing test-app identity.
+
+The Mac kernel does not expose `vm.malloc_ranges` (ENOENT). The first candidate
+run, 41520490826, failed its integration assertion for this reason and produced
+no IPA. The revised suite explicitly logs SKIP for actual kernel range
+registration, then models only registration/bounds over a test-owned padding
+window. Mappings, protection changes, memory access and unmapping remain real
+Mach operations; this does **not** validate iPadOS acceptance of the range API.
+
+With ordinary placement forced to fail, the revised suite passed 24 successive
+Unity-size reservations, retaining 6 GiB of aligned virtual space with a
+1,539 KiB physical-footprint increase. It passed release/reuse without another
+registration, zero fill at both ends, refusal propagation, a concurrent
+registration collision, and preservation of every live mapping. Previous
+native cage, ordinary-gap, syscall 270, APK alias and QEMU RAM-plan regressions
+also passed. The unmodified APK's ARM64 allocator and syscall-reader routines
+were rechecked locally; no proprietary files were uploaded.
+
+The new IPA has not yet run on the iPad. The next report should contain either
+`mm: delegated VM range addr=` or a specific delegation-unavailable/refused
+message if ordinary reservations are again exhausted. A successful build and
+the modeled registration test do not establish successful Unity startup,
+editor interaction or chart saving. Final process termination remains unknown
+without a matching OS report; no JetsamEvent was accessible from this PC.
