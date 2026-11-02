@@ -531,9 +531,153 @@ native cage, ordinary-gap, syscall 270, APK alias and QEMU RAM-plan regressions
 also passed. The unmodified APK's ARM64 allocator and syscall-reader routines
 were rechecked locally; no proprietary files were uploaded.
 
-The new IPA has not yet run on the iPad. The next report should contain either
+At delivery, that IPA had not yet run on the iPad. The next report was expected to contain either
 `mm: delegated VM range addr=` or a specific delegation-unavailable/refused
 message if ordinary reservations are again exhausted. A successful build and
 the modeled registration test do not establish successful Unity startup,
 editor interaction or chart saving. Final process termination remains unknown
 without a matching OS report; no JetsamEvent was accessible from this PC.
+
+## Physical follow-up: f7126ab, 2026-11-02 20:48 UTC
+
+The supplied physical report confirms that the delegated-range proposal did
+**not** solve this device's failure: `vm.malloc_ranges` returns ENOENT here too.
+It must not be treated as tested or usable merely because its symbol exists.
+The last measurement is 1,123 MiB physical footprint, 1,112 MiB resident,
+3,996 MiB process memory headroom, 460,034 MiB virtual, and 92,886 entries.
+The last figure is not 460 GiB of physical RAM usage. No JetsamEvent or OS
+termination report is available, so the ultimate process exit remains unknown.
+
+### Audit conclusions
+
+* The ordinary gap walker has no 512 MiB candidate in this run. `attempts=0`
+  is consistent with a maximum gap of 256 MiB. The old `mach_error=3` was an
+  initialized default, not a failed Mach allocation's result. Logging now
+  separates the last actual attempt from the enumeration result, and walks
+  the short final tail too. Object-name ports are released after each query.
+* TASK_VM_INFO's min/max fields are map bounds in public XNU, not the first
+  and last live allocation. Extending those bounds by guessing addresses,
+  or treating max-protection-zero entries as free, would be incorrect.
+  `vm.malloc_ranges` can report ENOENT when the task does not use user ranges;
+  ENOENT alone does not identify a missing kernel symbol or prove why ranges
+  are disabled on this device.
+* Unity retains approximately 256 MiB after each near-512 MiB reservation;
+  the successful partial unmaps are intentional alignment trimming. Its
+  caller at 0x489150 explicitly requests 256 MiB alignment. The request is
+  not inflated by an incorrect 4 KiB/16 KiB page-size conversion. The source
+  and supplied log do not establish a leaking Unity allocation lifecycle.
+* The prewarm RX view is 512 MiB, its original RW view is another 512 MiB of
+  virtual addresses, and the near RW view is 416 MiB. Debugger initialization
+  writes each 16 KiB page separately. Their page-entry counts total 92,160,
+  close to the observed 92,886. This is a source/log-based explanation of
+  most entries, not a captured per-region ownership census. The original RW
+  view is still owned by the shared QEMU/legacy JIT API; deleting it from the
+  translation layer could invalidate another consumer. No JIT mapping is
+  removed by this fix, and physical pages are shared by the aliases.
+* The requested extended-virtual-addressing entitlement already exists in
+  Husk's packaging. Its presence after Sideloadly signing has not been
+  verified. The new fix does not depend on adding entitlements or using the
+  unavailable delegated-range API. No Apple credentials were accessed.
+* The inspected Unity/IL2CPP allocation path uses mmap, munmap and mprotect,
+  not mremap. Existing general mremap flag/protection and anonymous-ledger
+  capacity limitations are not claimed fixed globally. The new path refuses
+  a full ledger and keeps successful mappings in it for normal release and
+  MADV_DONTNEED handling. Previous cage ownership and syscall-270 fixes stay.
+
+The public implementation sources used to audit these contracts are Apple's
+[task VM accounting](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/task.c),
+[Mach VM entry points](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/vm/vm_user.c),
+and [VM range reporting](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vm/vm_unix.c).
+They are not a claim that every private iPadOS 27 implementation detail matches.
+
+### Implemented correction: native aligned Baselib reservations
+
+Linux mmap has no arbitrary-alignment argument. This exact Unity Baselib
+implementation asks for `size + alignment - page`, then trims both ends.
+For a 256 MiB allocation with 256 MiB alignment on a 16 KiB host that means
+`0x1fffc000` temporary bytes. A correctly aligned 256 MiB hole is sufficient
+for the final allocation but cannot satisfy that temporary request.
+
+Husk now adapts this verified Baselib reservation operation to Mach's native
+alignment mask. It reserves **all requested final bytes** with PROT_NONE and
+the original alignment, first through kernel placement, then by trying actual
+aligned gaps atomically without overwrite. This does not change Android mmap
+semantics, reduce a requested allocation, modify a memory limit, allocate
+physical RAM eagerly, or turn kernel refusal into success. It eliminates the
+temporary near-512 MiB requirement for these reservation-only calls.
+
+The stripped allocator has no exported Baselib symbol. The loader therefore
+checks SHA-256 of all 1,544 bytes covering its allocation function and argument
+validator at ELF 0xf000ac..0xf006b4 before instruction translation. Only the
+verified Unity 6000.0.10f1c1 code receives an in-memory compatibility redirect;
+other engine builds and the AOT path are unchanged. The source includes a
+digest, not the game library. The user's APK remains byte-for-byte unchanged.
+The redirect uses the already granted JIT RW/RX aliases, before constructors,
+and retains a trampoline to the translated original function.
+
+The fast path handles only host-page-size, nonzero counts, power-of-two
+alignment, reservation-only state, zero extra flags and a clear error state.
+It checks multiplication overflow. Everything else, including real kernel
+exhaustion, uses the original validation/error path. The 24-byte ARM64 return
+structure and x8 result pointer are preserved. Guest release/protection still
+use the existing compatibility functions and ownership ledger.
+
+This removes unnecessary contiguous-VA demand; it does not manufacture more
+address space. If all correctly aligned final-sized holes are exhausted later,
+the application can still legitimately fail. Physical editor operation,
+touch, chart editing, saving and reopening remain unverified until an iPad run.
+
+### Native aligned build and regression evidence
+
+Run [41525147421](https://github.com/Ghosttown-sh/Husk-VM-Test/actions/runs/41525147421)
+passed on an ARM64 Mac with 16 KiB pages. Its source commit is
+`63945828183d3150edd9d323c07f406b6fde32d8`; the IPA reports `6394582-dirty`
+after the normal generated-project/notices packaging changes. The IPA is
+142,249,692 bytes, SHA-256
+`6d30e02c7db606221957451629d754b1594a6bafd8f490875199918b2c642a55`.
+The isolated bundle remains `com.husk.vmtest` with its existing two extensions.
+Sideloadly must sign the update with the same account and bundle identity used
+for the installed test app; uninstalling or clearing data is unnecessary.
+
+The new native suite first reproduces the failure: the original `0x1fffc000`
+request cannot fit a window of six separate 256 MiB holes. It then performs
+144 final-sized, 256 MiB-aligned reservations across 24 exhaustion/recovery
+cycles. In this test, only task bounds and the initial ANYWHERE refusal are
+injected; candidate mappings, protection changes, reads, writes and unmaps are
+real Mach operations. Every requested page is covered by a PROT_NONE entry
+before commit, committed pages are initially zero, adjacent occupied sentinel
+mappings survive, and physical-footprint growth stays below the asserted
+64 MiB ceiling. This is not a measurement of the iPad's JIT aliases.
+
+Partial release/reuse, unaligned-unmap refusal, invalid alignment, overflow,
+existing error states, unsupported flags, the explicit allocation limit and
+ownership-table exhaustion also pass. An additional unrestricted allocation
+tests real Mach ANYWHERE placement with its alignment mask. Redirect tests
+reject a changed prologue, an unreachable trampoline and duplicate installation.
+All earlier cage, ordinary-gap, process_vm_readv, APK alias, QEMU RAM-plan and
+native-page-layout regressions passed in the same build.
+
+The first candidate run, 41524756856, failed a test assertion which incorrectly
+required the entire reserved range to appear as one VM entry. The assertion
+was replaced by a walk requiring uninterrupted coverage and PROT_NONE on every
+entry; the full revised suite then passed. No production protection requirement
+was relaxed. Both the failed and successful logs are included in delivery evidence.
+
+Locally, the original APK's SHA-256 was rechecked and its actual allocator was
+executed in Unicorn. The test consumed the exact redirect/trampoline bytes
+emitted by the successful Mac test. It verified the full 24-byte aligned result,
+the x8 result pointer, argument and callee-saved registers, and stack balance.
+For refusal, invalid/unsupported parameters and pre-existing errors, the
+redirected fallback matches the original result, error bytes and syscall trace.
+The host callback is modeled in Unicorn; its C implementation and Mach behavior
+are covered separately by the native suite. Neither test executes Unity startup.
+The APK and game libraries were not changed or uploaded.
+
+Xcode device compilation, strict deep code-signature verification, and a second
+Windows inspection of ZIP CRC, all nine ARM64 iOS binaries, iPad support,
+bundle IDs, resources and the new allocator marker passed. Physical-device
+execution of this IPA is still pending. Useful next-run markers are
+`unity-vm: verified Baselib allocator uses native aligned reservations` and
+`mm: aligned reservation ... len=0x10000000 alignment=0x10000000` for the
+256 MiB requests. A later failure must be evaluated from its new request and
+VM state; it is not proof of Jetsam or evidence that this build reached the editor.
