@@ -1371,8 +1371,9 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
      * virtual address space. Give back only that unused cage and retry the
      * identical request once. Never substitute a smaller or fictitious mapping,
      * discard a guest-owned cage, or defeat deliberate test/loader refusals. */
-    if (r == MAP_FAILED && errno == ENOMEM && !refuse && prot == PROT_NONE
-        && (flags & 0x23) == 0x22 && !(flags & 0x10) && !compressed_heap_request(len)
+    bool movable_data = (prot & ~(PROT_READ | PROT_WRITE)) == 0
+        && (flags & ~0x4000) == 0x22 && !compressed_heap_request(len);
+    if (r == MAP_FAILED && errno == ENOMEM && !refuse && movable_data
         && release_unused_compressed_heap()) {
         errno = 0;
         r = mmap(addr, len, prot, df, -1, off);
@@ -1381,15 +1382,26 @@ static void *b_mmap(void *addr, size_t len, int prot, int flags, int fd, long of
                     addr, len, r, r == MAP_FAILED ? retry_errno : 0);
         errno = retry_errno;
     }
-    /* A non-fixed Linux reservation may use any free part of the task map.
+    /* A non-fixed Linux data mapping may use any free part of the task map.
      * Darwin mmap's heap-range search can fail even after the unused cage was
      * returned. Reserve a real gap with Mach's atomic no-overwrite operation.
      * Keep all fixed, shared, file, executable and unsupported-flag requests
-     * on their existing paths. MAP_NORESERVE is a Linux accounting hint. */
-    if (r == MAP_FAILED && errno == ENOMEM && !refuse && prot == PROT_NONE
-        && (flags & ~0x4000) == 0x22 && !compressed_heap_request(len)) {
-        tl_vm_log_state("reservation-ENOMEM");
+     * on their existing paths. MAP_NORESERVE is a Linux accounting hint.
+     * IL2CPP also expands its GC heap with RW mappings and a soft address hint.
+     * Reserve the full size, then apply the requested data permissions before
+     * returning it. A failed protection change must not leak a reservation or
+     * return inaccessible memory as a successful allocation. */
+    if (r == MAP_FAILED && errno == ENOMEM && !refuse && movable_data) {
+        tl_vm_log_state(prot == PROT_NONE ? "reservation-ENOMEM" : "data-ENOMEM");
         r = tl_vm_reserve_gap(len);
+        if (r != MAP_FAILED && prot != PROT_NONE && mprotect(r, len, prot) != 0) {
+            int protect_errno = errno;
+            munmap(r, len);
+            r = MAP_FAILED;
+            errno = protect_errno;
+        }
+        if (r != MAP_FAILED && prot != PROT_NONE)
+            tl_log_line("mm: recovered data mapping hint=%p addr=%p len=%#zx prot=%d", addr, r, len, prot);
         if (r != MAP_FAILED) errno = 0;
     }
     if (r == MAP_FAILED && (errno == ENOMEM || force_phantom) && prot == 0 && (flags & 0x20) && !(flags & 0x10)) { r = phantom_reserve(len); if (r != MAP_FAILED) errno = 0; }

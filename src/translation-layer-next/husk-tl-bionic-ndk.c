@@ -351,7 +351,7 @@ static void *b_AAssetManager_open(void *mgr, const char *name, int mode)
 }
 /*
  * AAudio, the way FMOD (Minecraft's audio) prefers to play: a stream whose data callback the system calls for the next burst of
- * samples. The output is always 48 kHz stereo 16-bit; a thread of ours calls the game's callback for a burst and hands the result
+ * samples. The output is stereo 16-bit at the requested stream rate; a thread of ours calls the game's callback for a burst and hands the result
  * to the host audio (tl_cocos_audio_hook, which blocks until the speakers have room -- that is what paces the game's mixer).
  * Recording is not offered.
  */
@@ -364,11 +364,11 @@ enum { AA_OK = 0, AA_UNAVAILABLE = -899, AA_TIMEOUT = -885, AA_FORMAT_I16 = 1, A
 #define AA_BURST 1024
 
 typedef int (*aa_data_cb)(void *stream, void *user, void *data, int frames);
-typedef struct aa_builder { aa_data_cb cb; void *user; int direction, per_callback, format, channels; } aa_builder;
+typedef struct aa_builder { aa_data_cb cb; void *user; int direction, per_callback, format, channels, rate; } aa_builder;
 typedef struct aa_stream {
     aa_data_cb cb; void *user;
     int burst;                                  /* frames per data callback */
-    int format, channels;                       /* what the app asked for: 16-bit or float, mono or stereo */
+    int format, channels, rate;                 /* negotiated stream format, distinct from hardware format */
     _Atomic int64_t frames;                     /* written to the speakers so far */
     atomic_int state, buffer_size;
     atomic_bool run;
@@ -383,22 +383,32 @@ static void b_AAudioStreamBuilder_setDirection(aa_builder *b, int d) { b->direct
 static void b_AAudioStreamBuilder_ignore(aa_builder *b, int v) { (void)b; (void)v; }
 static void b_AAudioStreamBuilder_setFramesPerDataCallback(aa_builder *b, int n) { b->per_callback = n; }
 static void b_AAudioStreamBuilder_setFormat(aa_builder *b, int f) { b->format = f; }
+static void b_AAudioStreamBuilder_setSampleRate(aa_builder *b, int rate) { b->rate = rate; }
 static void b_AAudioStreamBuilder_setChannelCount(aa_builder *b, int n) { b->channels = n; }
 static void b_AAudioStreamBuilder_setChannelMask(aa_builder *b, uint32_t m) { b->channels = __builtin_popcount(m) == 1 ? 1 : 2; }
 static void b_AAudioStreamBuilder_setErrorCallback(aa_builder *b, void *cb, void *user) { (void)b; (void)cb; (void)user; }
 
 static int b_AAudioStreamBuilder_openStream(aa_builder *b, aa_stream **out)
 {
-    if (b->direction != 0) return AA_UNAVAILABLE;                   /* output only */
+    *out = NULL;
+    if (b->direction != 0 || b->rate < 0 || b->rate > 192000
+        || (b->rate > 0 && b->rate < 8000)) return AA_UNAVAILABLE;
     aa_stream *s = calloc(1, sizeof(*s));
+    if (!s) return AA_UNAVAILABLE;
     s->cb = b->cb; s->user = b->user;
     s->burst = b->per_callback > 0 && b->per_callback <= 8192 ? b->per_callback : AA_BURST;
     s->format = b->format == AA_FORMAT_FLOAT ? AA_FORMAT_FLOAT : AA_FORMAT_I16;
     s->channels = b->channels == 1 ? 1 : AA_CHANNELS;
+    /* An explicit AAudio rate must be honored or opening must fail. Unity's
+     * mixer sets a rate without querying it back. Ignoring 24000 here and
+     * consuming those frames at 48000 doubles both speed and pitch. Zero is
+     * AAUDIO_UNSPECIFIED, for which the host default remains 48000. */
+    s->rate = b->rate ? b->rate : AA_RATE;
     atomic_store(&s->state, AA_STATE_OPEN); atomic_store(&s->buffer_size, s->burst * 2);
     *out = s;
-    tl_log_line("aaudio: stream opened (%d Hz, %d channels, %s, %s, burst %d)", AA_RATE, s->channels, s->format == AA_FORMAT_FLOAT ? "float" : "16-bit",
+    tl_log_line("aaudio: stream opened (%d Hz, %d channels, %s, %s, burst %d)", s->rate, s->channels, s->format == AA_FORMAT_FLOAT ? "float" : "16-bit",
                 s->cb ? "data callback" : "written", s->burst);
+    tl_log_line("aaudio: requested rate=%d, stream rate=%d (frames per second)", b->rate, s->rate);
     return AA_OK;
 }
 
@@ -416,12 +426,16 @@ static const int16_t *aa_convert(aa_stream *s, const void *in, int frames, int16
 }
 static void aa_play(aa_stream *s, const void *buf, int frames)
 {
-    static __thread int16_t *conv; static __thread int conv_frames;
-    if (frames > conv_frames) { free(conv); conv = malloc((size_t)frames * AA_CHANNELS * sizeof(int16_t)); conv_frames = conv ? frames : 0; }
-    if (!conv) return;
-    const int16_t *pcm = aa_convert(s, buf, frames, conv);
-    if (tl_cocos_audio_hook) tl_cocos_audio_hook(pcm, frames, AA_CHANNELS, AA_RATE);
-    else { struct timespec ts = { 0, (long)((double)frames * 1e9 / AA_RATE) }; nanosleep(&ts, NULL); }
+    int16_t conv[AA_BURST * AA_CHANNELS];
+    size_t stride = (size_t)s->channels * (s->format == AA_FORMAT_FLOAT ? 4 : 2);
+    for (int done = 0; done < frames;) {
+        int n = frames - done; if (n > AA_BURST) n = AA_BURST;
+        const int16_t *pcm = aa_convert(s, (const uint8_t *)buf + (size_t)done * stride, n, conv);
+        if (tl_cocos_audio_hook) tl_cocos_audio_hook(pcm, n, AA_CHANNELS, s->rate);
+        else { int64_t ns = (int64_t)n * 1000000000 / s->rate;
+            struct timespec ts = { (time_t)(ns / 1000000000), (long)(ns % 1000000000) }; nanosleep(&ts, NULL); }
+        done += n;
+    }
 }
 static bool aa_alive(void *arg) { return atomic_load(&((aa_stream *)arg)->run); }
 static void *aa_pump(void *arg)
@@ -465,7 +479,7 @@ static int aa_stop(aa_stream *s, int state)
 }
 static int b_AAudioStream_requestStop(aa_stream *s) { return aa_stop(s, AA_STATE_STOPPED); }
 static int b_AAudioStream_close(aa_stream *s) { aa_stop(s, AA_STATE_CLOSED); free(s); return AA_OK; }
-static int b_AAudioStream_getSampleRate(aa_stream *s) { (void)s; return AA_RATE; }
+static int b_AAudioStream_getSampleRate(aa_stream *s) { return s->rate; }
 static int b_AAudioStream_getChannelCount(aa_stream *s) { return s->channels; }
 static int b_AAudioStream_getFormat(aa_stream *s) { return s->format; }
 static int b_AAudioStream_getDeviceId(aa_stream *s) { (void)s; return 0; }
@@ -947,7 +961,7 @@ const tl_bionic_entry tl_tab_ndk[] = {
     TL_WRAP("AAudioStreamBuilder_openStream", b_AAudioStreamBuilder_openStream), TL_WRAP("AAudioStreamBuilder_setDeviceId", b_AAudioStreamBuilder_ignore),
     TL_WRAP("AAudioStreamBuilder_setBufferCapacityInFrames", b_AAudioStreamBuilder_ignore), TL_WRAP("AAudioStreamBuilder_setInputPreset", b_AAudioStreamBuilder_ignore),
     TL_WRAP("AAudioStreamBuilder_setPerformanceMode", b_AAudioStreamBuilder_ignore), TL_WRAP("AAudioStreamBuilder_setUsage", b_AAudioStreamBuilder_ignore),
-    TL_WRAP("AAudioStreamBuilder_setSampleRate", b_AAudioStreamBuilder_ignore), TL_WRAP("AAudioStreamBuilder_setChannelCount", b_AAudioStreamBuilder_setChannelCount),
+    TL_WRAP("AAudioStreamBuilder_setSampleRate", b_AAudioStreamBuilder_setSampleRate), TL_WRAP("AAudioStreamBuilder_setChannelCount", b_AAudioStreamBuilder_setChannelCount),
     TL_WRAP("AAudioStreamBuilder_setFormat", b_AAudioStreamBuilder_setFormat), TL_WRAP("AAudioStreamBuilder_setSharingMode", b_AAudioStreamBuilder_ignore),
     TL_WRAP("AAudioStream_requestStart", b_AAudioStream_requestStart), TL_WRAP("AAudioStream_requestStop", b_AAudioStream_requestStop),
     TL_WRAP("AAudioStream_close", b_AAudioStream_close), TL_WRAP("AAudioStream_getSampleRate", b_AAudioStream_getSampleRate),

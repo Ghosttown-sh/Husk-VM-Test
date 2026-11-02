@@ -32,6 +32,7 @@ static int range_sysctl(const char *name,void *old,size_t *len,void *newp,size_t
 /* Only the ordinary heap/gap placement is constrained. Delegation, protection,
  * data access, trimming, freeing and reusing use the real Darwin kernel. */
 static uintptr_t occupied;
+static bool fail_data;
 static kern_return_t bounded_task_info(task_name_t t, task_flavor_t flavor, task_info_t info,
                                        mach_msg_type_number_t *count) {
     kern_return_t kr = task_info(t, flavor, info, count);
@@ -42,7 +43,7 @@ static kern_return_t bounded_task_info(task_name_t t, task_flavor_t flavor, task
     return kr;
 }
 static void *full_heap_mmap(void *a, size_t n, int p, int flags, int fd, off_t off) {
-    if ((flags & MAP_ANON) && !(flags & MAP_FIXED) && p == PROT_NONE) {
+    if ((flags & MAP_ANON) && !(flags & MAP_FIXED) && (p == PROT_NONE || fail_data)) {
         errno = ENOMEM; return MAP_FAILED;
     }
     return mmap(a,n,p,flags,fd,off);
@@ -149,6 +150,20 @@ int main(void) {
     void *reused=live[7]; assert(b_munmap(reused,0x10000000)==0);
     live[7]=unity_reserve(); assert(live[7]==reused && registrations()==24);
     puts("PASS: freed delegated range reused without another kernel registration; first/last committed pages zero-filled");
+    fail_data=true;
+    const size_t imports[]={0x3e3c000,0x3588000};
+    for(int cycle=0;cycle<4;cycle++) for(int i=0;i<2;i++) {
+        size_t n=imports[i];
+        char *p=b_mmap((void *)0x713fd20000ULL,n,PROT_READ|PROT_WRITE,0x22,-1,0);
+        assert(p!=MAP_FAILED && anon_contains((uintptr_t)p,n));
+        for(size_t j=0;j<n;j+=getpagesize()) { assert(p[j]==0); p[j]=73; }
+        assert(b_mmap(p,n,PROT_NONE,0x32,-1,0)==p);
+        assert(b_mmap(p,n,PROT_READ|PROT_WRITE,0x32,-1,0)==p);
+        for(size_t j=0;j<n;j+=getpagesize()) assert(p[j]==0);
+        assert(b_munmap(p,n)==0);
+    }
+    assert(registrations()==24);
+    puts("PASS: 8 import-sized RW delegated recoveries, full-page writes, zero-filled GC recommit and reuse without new registration");
     real_create=range_create; assert(real_create);
     range_create=denied;
     assert(tl_vm_reserve_delegated(0x1fffc000)==MAP_FAILED && errno==ENOMEM);

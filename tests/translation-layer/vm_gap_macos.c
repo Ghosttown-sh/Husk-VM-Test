@@ -19,6 +19,7 @@ static vm_address_t window_start;
 static bool bounded = true, inject_race;
 static vm_address_t raced;
 static unsigned fallback_maps;
+static bool fail_data;
 static kern_return_t test_task_info(task_name_t t, task_flavor_t flavor, task_info_t info,
                                     mach_msg_type_number_t *count) {
     kern_return_t kr = task_info(t, flavor, info, count);
@@ -29,7 +30,7 @@ static kern_return_t test_task_info(task_name_t t, task_flavor_t flavor, task_in
     return kr;
 }
 static void *test_mmap(void *a, size_t n, int p, int flags, int fd, off_t off) {
-    if ((flags & MAP_ANON) && !(flags & MAP_FIXED) && p == PROT_NONE) {
+    if ((flags & MAP_ANON) && !(flags & MAP_FIXED) && (p == PROT_NONE || fail_data)) {
         errno = ENOMEM; return MAP_FAILED;
     }
     return mmap(a,n,p,flags,fd,off);
@@ -140,14 +141,30 @@ int main(void) {
     for(int i=0;i<5;i++) assert(b_munmap(live[i],0x10000000)==0);
     assert(g_nanon==0);
     assert(munmap((void *)raced,getpagesize())==0);
+    fail_data=true;
+    const size_t imports[]={0x3e3c000,0x3588000};
+    for(int cycle=0;cycle<8;cycle++) for(int i=0;i<2;i++) {
+        size_t n=imports[i];
+        char *p=b_mmap((void *)0x713fd20000ULL,n,PROT_READ|PROT_WRITE,0x22,-1,0);
+        assert(p!=MAP_FAILED && anon_contains((uintptr_t)p,n));
+        for(size_t j=0;j<n;j+=getpagesize()) { assert(p[j]==0); p[j]=42; }
+        assert(b_mmap(p,n,PROT_NONE,0x32,-1,0)==p);
+        assert(b_mmap(p,n,PROT_READ|PROT_WRITE,0x32,-1,0)==p);
+        for(size_t j=0;j<n;j+=getpagesize()) assert(p[j]==0);
+        assert(b_munmap(p,n)==0);
+    }
+    assert(g_nanon==0);
+    puts("PASS: 16 import-sized RW gap recoveries, every page writable/zero-filled, GC decommit/recommit and ownership cleanup");
     /* Fill the entire permitted test window: must honestly return ENOMEM. */
     vm_address_t full=START;
     assert(vm_map(mach_task_self(),&full,END-START,0,VM_FLAGS_FIXED,MACH_PORT_NULL,
         0,FALSE,VM_PROT_NONE,VM_PROT_ALL,VM_INHERIT_COPY)==KERN_SUCCESS);
     assert(b_mmap(NULL,0x1fffc000,PROT_NONE,0x22,-1,0)==MAP_FAILED);
+    assert(b_mmap(NULL,imports[0],PROT_READ|PROT_WRITE,0x22,-1,0)==MAP_FAILED);
     assert(munmap((void *)full,END-START)==0);
     assert(munmap((void *)boundary,getpagesize())==0);
     puts("PASS: repeated real 512 MiB reservations after heap ENOMEM, trims, reuse, no overwrite during race, low footprint, honest exhaustion and failed-unmap bookkeeping");
     bounded=false;
+    fail_data=false;
     readv_tests();
 }

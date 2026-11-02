@@ -59,6 +59,8 @@ def validate(path,commit):
         assert b'unity-vm: verified Baselib allocator uses native aligned reservations' in app_code, 'Main executable lacks verified native aligned allocator bridge'
         assert b'egl: native-window GPU image compositor' in app_code, 'Main executable lacks native GPU compositor bridge'
         assert b'audio: independent producer output' in app_code, 'Main executable lacks independent audio producer queues'
+        assert b'aaudio: requested rate=' in app_code, 'Main executable lacks requested-rate audio fix'
+        assert b'mm: recovered data mapping' in app_code, 'Main executable lacks writable data ENOMEM recovery'
         assert b'unity: emulated code stores=' in app_code, 'Main executable lacks store-emulation diagnostics'
         assert b"a JIT's code memory (mmap hinted near the code) comes from the JIT region" not in app_code, 'Unsafe RW-hint-to-RX allocation heuristic is still compiled in'
         assert b'mm: delegated VM range addr=' in app_code, 'Main executable lacks kernel-approved VM range delegation'

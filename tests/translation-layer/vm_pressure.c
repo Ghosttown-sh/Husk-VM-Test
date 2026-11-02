@@ -44,6 +44,7 @@ static int getpagesize(void) { return TL_XMEM_PAGE; }
 static struct region { uintptr_t addr; size_t size; int prot; } maps[32];
 static int nmaps, calls, unmaps, fail_errno, injected_retry_errno, dealloc_fails;
 static int guest_errno, loaded, log_clobbers_errno;
+static int gap_enabled, gap_calls, protect_error, protects;
 static bool codewrite_on;
 static int jit_allocations;
 static uint8_t jit_rx[65536], jit_rw[65536];
@@ -81,6 +82,14 @@ static int munmap(void *p, size_t n) {
     }
     errno=EINVAL; return -1;
 }
+static int mprotect(void *p, size_t n, int prot) {
+    protects++;
+    if (protect_error) { errno=protect_error; return -1; }
+    for(int i=0;i<nmaps;i++) if(maps[i].addr==(uintptr_t)p && maps[i].size==n) {
+        maps[i].prot=prot; return 0;
+    }
+    assert(false); return -1;
+}
 static kern_return_t vm_map(int task, vm_address_t *a, size_t n, uintptr_t mask,
         int flags, int object, int off, int copy, int prot, int max, int inherit) {
     void *p=reserve(n,mask,prot);
@@ -112,7 +121,11 @@ static void mm_trace(const char *what,void *a,size_t n,long x,long y) {}
 
 /* This bounded policy model isolates cage ownership. Real task-map gap
  * search and process_vm_readv are covered by vm_gap_macos.c. */
-static void *tl_vm_reserve_gap(size_t size) { (void)size; errno = ENOMEM; return MAP_FAILED; }
+static void *tl_vm_reserve_gap(size_t size) {
+    gap_calls++;
+    if(gap_enabled) return reserve(size,TL_XMEM_PAGE-1,PROT_NONE);
+    errno = ENOMEM; return MAP_FAILED;
+}
 static void tl_vm_log_state(const char *reason) { (void)reason; }
 #include "production_mm.inc"
 
@@ -120,6 +133,7 @@ static void reset(bool prewarm) {
     nmaps=calls=unmaps=fail_errno=injected_retry_errno=dealloc_fails=loaded=log_clobbers_errno=0;
     g_compressed_heap=0; g_nphantom=0; guest_errno=123;
     codewrite_on=false; jit_allocations=0;
+    gap_enabled=gap_calls=protect_error=protects=0;
     if (prewarm) { husk_prepare_compressed_heap(); assert(g_compressed_heap==START); }
     /* Three live JIT/runtime ranges, leaving only separated 256 MiB holes
      * beside the 4 GiB speculative cage. None may be overwritten/released. */
@@ -154,6 +168,27 @@ int main(void) {
     assert(b_mmap(NULL,16384,PROT_READ|PROT_EXEC,0x22,-1,0)==jit_rx);
     assert(jit_allocations==1);
     puts("PASS: nearby RW heap hints stay writable data; explicit executable requests retain the JIT path");
+    const size_t imports[]={0x3e3c000,0x3588000};
+    for(int i=0;i<2;i++) {
+        reset(false); fail_errno=ENOMEM; gap_enabled=1; codewrite_on=true;
+        p=b_mmap((void *)0x713fd20000ULL,imports[i],PROT_READ|PROT_WRITE,0x22,-1,0);
+        assert(p!=MAP_FAILED && jit_allocations==0 && gap_calls==1 && protects==1);
+        assert(maps[nmaps-1].size==imports[i] && maps[nmaps-1].prot==3 && errno==0);
+        blockers_intact();
+        assert(munmap(p,imports[i])==0);
+    }
+    reset(false); fail_errno=ENOMEM; gap_enabled=1; protect_error=EACCES; log_clobbers_errno=1;
+    assert(b_mmap(NULL,imports[0],3,0x22,-1,0)==MAP_FAILED);
+    assert(nmaps==3 && unmaps==1 && errno==EACCES && guest_errno==EACCES);
+    const int excluded[]={0x32,0x21,2,0x100022};
+    for(unsigned i=0;i<sizeof(excluded)/sizeof(excluded[0]);i++) {
+        reset(false); fail_errno=ENOMEM; gap_enabled=1;
+        assert(b_mmap((void *)START,imports[0],3,excluded[i],-1,0)==MAP_FAILED);
+        assert(gap_calls==0 && protects==0);
+    }
+    reset(false); fail_errno=EACCES; gap_enabled=1;
+    assert(b_mmap(NULL,imports[0],3,0x22,-1,0)==MAP_FAILED && gap_calls==0);
+    puts("PASS: both import RW sizes recover without RX storage; protection failure rolls back and preserves errno; fixed/shared/file/unknown flags stay excluded");
     reset(true);
     assert(mmap(NULL,unity,0,MAP_PRIVATE|MAP_ANON,-1,0)==MAP_FAILED && errno==ENOMEM);
     calls=0;
