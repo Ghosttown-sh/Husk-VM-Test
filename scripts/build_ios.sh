@@ -160,6 +160,11 @@ stage_qemu() {
     local log="$LOGS/qemu.log"
     done_stage qemu && { echo "[skip] qemu"; return 0; }
     apply_patch qemu-10.0.12-utm qemu-10.0.12-utm.patch
+    # configure describes both macOS and iOS as darwin/aarch64. Meson otherwise
+    # assumes its device sanity executable can run on the Apple Silicon host.
+    # configure loads this machine overlay after its generated cross file.
+    mkdir -p "$dir/configs/meson"
+    printf '[properties]\nneeds_exe_wrapper = true\n' > "$dir/configs/meson/darwin.txt"
     banner "building qemu (this is the long one)"
     rm -rf "$dir/_husk_build"; mkdir -p "$dir/_husk_build"
     ( cd "$dir/_husk_build" \
