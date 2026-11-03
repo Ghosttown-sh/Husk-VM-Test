@@ -1,6 +1,6 @@
 # Follow-up: reclaim obsolete JIT mappings
 
-The next iPad report reaches about 1,013 Unity frames, keeps GPU presentation at 44–57 fps, then reports failure to allocate a 72-byte host Java object. The user identifies **editing BPM** as the triggering operation. The preallocated OutOfMemoryError now propagates instead of dereferencing NULL. This protects the failure path but does **not** resolve allocation exhaustion. Physical headroom remains roughly 3.6 GiB.
+The next iPad report reaches about 1,013 Unity frames, keeps GPU presentation at 44–57 fps, then reports failure to allocate a 72-byte host Java object. The user identifies **opening the BPM input field, before typing anything**, as the triggering operation. The preallocated OutOfMemoryError now propagates instead of dereferencing NULL. This protects the failure path but does **not** resolve allocation exhaustion. Physical headroom remains roughly 3.6 GiB.
 
 Every large guest reservation reports `VM range bounds unavailable errno=2`, so the previous proactive delegated-range path was not accepted on this device. [XNU's sysctl implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vm/vm_unix.c) can return ENOENT when the process does not use user ranges; it is not proof that the API name simply disappeared. The diagnostic now reports a non-mutating empty-recipe capability probe on the first bounds failure. It does not guess usable addresses or overwrite kernel padding. Mac registration-model results from the previous build did not establish iPad support.
 
