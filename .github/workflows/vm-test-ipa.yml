@@ -33,6 +33,9 @@ jobs:
       - name: Install public build tools
         run: |
           brew install xcodegen qemu meson ninja pkg-config autoconf automake libtool
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Select signed Swift 6.4 compiler for the vendored StikJIT framework
         if: inputs.runner != 'xcode-27'
         run: bash scripts/install_vm_test_swift.sh

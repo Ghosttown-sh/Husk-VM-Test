@@ -72,6 +72,11 @@ python3 tools/stage_vm_test_dependencies.py "$OFFICIAL_IPA"
 # would silently omit this repair. Rebuild it and its pinned public dependencies;
 # the staged ANGLE/Java/PS4 resources remain the verified release versions.
 bash scripts/fetch_sources.sh
+# virgl's format generator imports yaml. Keep build-only Python packages out of
+# the runner's managed Python and select this interpreter in the cross files.
+python3 -m venv "$ROOT/build/gpu-build-python"
+"$ROOT/build/gpu-build-python/bin/python3" -m pip install 'PyYAML==6.0.3'
+export PATH="$ROOT/build/gpu-build-python/bin:$PATH"
 bash scripts/build_ios.sh libffi glib pixman libucontext libslirp
 python3 tools/stage_vm_gpu_headers.py | tee build/evidence/gpu-build-headers.log
 cp build/ios-arm64/cross-darwin.meson build/ios-arm64/cross-ios-darwin.meson
